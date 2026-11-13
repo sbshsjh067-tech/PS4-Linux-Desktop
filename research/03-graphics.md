@@ -70,19 +70,30 @@ correct settings"* — which is why every distro needs its own Mesa build [S06].
 3. The "GPU hang" is a **RADV** problem, not the kernel and not the hardware: OpenGL and light Vulkan
    (vkcube) work on the same machine, only DXVK-triggered RADV pipelines explode [S08].
 
+## 3-bis. Correction (2026-11-13): the real defect is HiZ, and the patch source moved
+
+Field-proven versions in §3 remain true, but they are a *workaround*. The **root cause** is now known:
+RADV enables **HiZ (HTILE)** on Liverpool/Gladius and HiZ hangs the `gfx` ring on the first DXVK frame.
+The maintained fix is `ps4-multiboot`'s `patches/mesa/0002-radv-ps4-no-hiz.patch`
+(`use_hiz = false` for `CHIP_LIVERPOOL`/`CHIP_GLADIUS`). Diagnostic without rebuilding:
+`RADV_DEBUG=nohiz`. Authoritative patch set and pinned versions: `14-pinned-inputs.lock.yaml`.
+
 ## 4. Where to get patched Mesa
 
 | Source | Form | Status | Notes |
 |---|---|---|---|
 | `DionKill/ps4-video-archlinux` | Arch binary repo + PKGBUILDs | active (2026) | `[ps4-video]` pacman repo; mesa-ps4, lib32-mesa-ps4, libdrm-ps4, xf86-video-amdgpu-ps4 [S07] |
 | `centi07/arch-ps4-aur` | same lineage | **archived Jan 2026** | do not depend on it [S07] |
-| `blue0x1/ps4-multiboot` (`ps4-mesa.tar.xz`) | self-contained bundle `/opt/ps4-mesa` | active | OpenGL 4.5 + Vulkan 1.3; needs glibc ≥2.38; tested on Pro [S17] |
-| `Ps3itaTeam/ps4linux-video-drivers` | reference patches | historical | the canonical patch set to read before patching a new Mesa [S06] |
+| `blue0x1/ps4-multiboot` (`ps4-mesa.tar.xz`) | self-contained bundle `/opt/ps4-mesa` | active | OpenGL 4.5 + Vulkan 1.3; **glibc floor is 2.41** (builder `debian:trixie`; the README's "2.38" is stale); tested on Pro [S17][S43] |
+| `blue0x1/ps4-multiboot` → `patches/mesa/0001,0002` | **2 patches, blob-verified** | active (2026-11) | **primary patch source**: PCI IDs/GFX7 map + RADV HiZ disable [S43] |
+| `ps4-linux/linux` (kernel repo) | — | **404 (unreadable)** | do not depend on it [S43] |
 | `fail0verflow/ps4-radeon-patches` | original 2015 patches | historical | explains *why* it is just PCI IDs + chip type [S06] |
 
-**Research recommendation:** build our own Mesa from a pinned tag with the Ps3ita-style patch set, and
-ship it in a private prefix so the distro's Mesa stays untouched (option 2 above). This removes the
-single biggest external dependency (a personal binary repo).
+**Research recommendation (updated 2026-11-13):** build our own Mesa **26.2.5 + libdrm 2.4.134** with
+multiboot's two patches into `/opt/ps4-mesa`, and select it with the `ps4-mesa-enable` mechanism
+(`/etc/ld.so.conf.d/00-ps4-mesa.conf` + `VK_DRIVER_FILES` + Xorg `modesetting/glamor/DRI 3`), keeping the
+distro's Mesa intact. `Ps3itaTeam` is historical reference only. Build **25.3.5** in parallel as the
+EXP-009 control. Note the bundle is configured `-Dgallium-va=disabled -Dvideo-codecs=`: **no VA-API**. 
 
 ## 5. Kernel-side graphics requirements
 
@@ -94,7 +105,9 @@ From the active kernel trees, the graphics-relevant features that must be presen
 - GLK/display bridge patches for HDMI hotplug and modeset on Slim/Pro [S29][S17].
 - Optional: `AMD_DEBUG=notiling` workaround when tiled scan-out is corrupted on some Belize units
   (`nodcc` did **not** fix it) [S15].
-- `/dev/ps4-mesa-lock` and consistency checks between kernel and Mesa builds (newer trees) [S30].
+- `/dev/ps4-mesa-lock` (present in `feeRnt@7.0-Clean`): the kernel and Mesa exchange a build token; on
+  mismatch the write fails with `-EPERM` and dmesg prints `ps4-mesa-lock: kernel mismatch`. This **is** the
+  kernel↔Mesa consistency check — do not invent another one [S43].
 
 ## 6. Performance envelope (what to promise users)
 

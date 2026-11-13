@@ -45,7 +45,7 @@ Facts per stage:
 
 | File | Where | Notes |
 |---|---|---|
-| `bzImage` | `/data/linux/boot/` (FTP) | Name must be exactly this; per-console kernel |
+| `bzImage` | **one of two layouts** (see §2-bis): `/data/linux/boot/` via FTP, or the FAT32 `PS4BOOT` partition of the USB | Name must be exactly this; per-console kernel; never both places |
 | `initramfs.cpio.gz` | `/data/linux/boot/` | Must match the kernel build |
 
 **Optional but recommended**
@@ -56,9 +56,27 @@ Facts per stage:
 | `vram.txt` | USB root | **MB** (`1024`); bad values fall back silently |
 | rootfs image/partition | USB | Label-based discovery (`LABEL=…`) |
 
+**Verified working set (2026-11-13, from a maintained project):**
+`panic=0 quiet loglevel=1 clocksource=tsc consoleblank=0 net.ifnames=0 radeon.dpm=0 amdgpu.dpm=0 drm.debug=0x4 log_buf_len=4M console=ttyS0,115200n8 console=tty0 video=HDMI-A-1:1920x1080@60D`
+
 **Legacy defaults seen in the wild** (a classic footgun): `root=UUID=<old uuid>`,
 `console=ttyS0` and `vram.txt=1` left over from an older loaders [S14]. The first Linux boot of a new
 build must verify the effective command line (`cat /proc/cmdline`).
+
+## 2-bis. The two supported kernel layouts (2026-11-13)
+
+| | **A — self-contained USB** | **B — kernel on the console** |
+|---|---|---|
+| Kernel + initramfs | FAT32 partition `PS4BOOT` (512 MiB, boot flag) on the USB | `/data/linux/boot/` over FTP (port 2121) |
+| Root filesystem | ext4 `LABEL=<NAME>-PS4` on the same USB | ext4 on the USB (or an image file) |
+| Root discovery | by **label** — the shipped `bootargs.txt` has no `root=` at all | same |
+| Advantage | one device, replug-safe, nothing written to the console | USB can be a plain root disk; kernel survives USB wipe |
+| Risk | a stale kernel on `PS4BOOT` silently outranks the one in `/data/` | needs FTP for every kernel change |
+
+Rules (replaces the old "USB bzImage wins" claim, which is unverifiable — see `13-...` §3 C1):
+1. Declare the layout in `profile.yaml` → `boot.layout` (`usb_fat32` | `internal_ftp`).
+2. **Refuse to boot** a set that has a kernel in both places.
+3. Ship `sha256` of kernel and initramfs in the manifest and print it in the boot log.
 
 ## 3. Boot arguments — what matters and why
 
@@ -74,7 +92,7 @@ drm.edid_firmware=edid/1920x1080.bin
 | Argument | Purpose | When to remove |
 |---|---|---|
 | `amdgpu.dpm=0` / `radeon.dpm=0` | disable dynamic power management — historically required on PS4 clocks | try enabling later for power savings (EXP-006) |
-| `drm.edid_firmware=…1080p` | force a known EDID, works around "no signal" on some monitors | remove if the real EDID works |
+| `video=HDMI-A-1:1920x1080@60D` | force a known mode on the HDMI connector (used by a maintained working set instead of an EDID blob) | remove if auto-detect works |
 | `console=…uart8250,mmio32,0xd0340000` | PS4 UART at `0xd0340000` — the **only** debug channel when video dies | keep for any debugging build |
 | `consoleblank=0` | HDMI must not blank (display bridge quirks) | keep on desktop images |
 | `net.ifnames=0` | stable `eth0/wlan0` names in docs and scripts | keep |

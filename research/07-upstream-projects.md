@@ -11,11 +11,11 @@ Last audit: **2026-11-13**.
 
 | Project | What it gives us | Status 2026-11 | Licence | Risk |
 |---|---|---|---|---|
-| `ps4-linux/ps4-linux-loader` (Firmware-Agnostic PS4 Linux Loader) | Payloads 32 MB→4 GB VRAM; runtime FW + southbridge + Pro detection; unified ELF/BIN | Active (pushed 2026-11-12), ~115★ | GPL-family (check) | Repo returned **404** to our sandbox on 2026-11-13 → **mirror it** |
-| `ps4-linux/linux` (kernel tree) | Kernel source with PS4 patches | Active (pushed 2026-11-12) | GPL-2.0 | same 404/visibility issue → mirror |
-| `sony-jaguar-devs/ps4-linux` (`7.0-Clean`) | Kernel with LED thermal mode, fan hwmon, `/dev/ps4-mesa-lock`, extra firmware | Active-ish | GPL-2.0 | README unreachable 2026-11-13 (known via search index + downstream citations) |
+| `ps4-linux/ps4-linux-loader` (Firmware-Agnostic PS4 Linux Loader) | Payloads 32 MB→4 GB VRAM; runtime FW + southbridge + Pro detection; unified ELF/BIN | **UNREADABLE** — API lists it (pushed 2026-11-12) but every content/branch/tag call and `git ls-remote` returns 404 | GPL-family (assumed) | **Do not depend on it.** Use the binary the user already has; record its sha256 |
+| `ps4-linux/linux` (kernel tree) | — | **UNREADABLE (404 on all endpoints)** | — | dropped as a dependency |
+| `sony-jaguar-devs/ps4-linux` | Was the `KERNEL_REPO` default of ps4-multiboot | **DELETED / renamed — `git ls-remote` says "Repository not found"** | GPL-2.0 | **ps4-multiboot cannot build as published**; we substitute `feeRnt@7.0-Clean` |
 | `meerzulee/linux-psx` | 7.x kernels for PS4/PS5, diagnostics suite, UVD research | **Very active** (pushed 2026-11-11) | GPL-2.0 | one-person project; excellent evidence quality |
-| `feeRnt/ps4-linux-12xx` | 6.15.4 Aeolia/Belize + 5.4.247 Baikal with Wi-Fi/BT/black-screen/Gladius fixes | Active (2026-10-30), 48★ | GPL-2.0 | branch-based releases; 6.15 generation |
+| `feeRnt/ps4-linux-12xx` | **Source of record.** `7.0-Clean` (fan hwmon `ps4-fan.c`, `ps4-led.c`, `ps4-mesa-lock.c`, `ps4-dmi.c`) + `6.15.4-aeolia-belize-crashniels` + Baikal branches | Active (2026-10-30), 48★ | GPL-2.0 | pins in `14-pinned-inputs.lock.yaml` |
 | `blue0x1/ps4-multiboot` | Installer + boot menu + **self-contained `ps4-mesa` bundle** | Active | GPL-2.0 | performs internal-image installs — we only use its Mesa bundle + kernel patches |
 | `X-F1REBALL-X/PS4-Linux` | Ready Arch+KDE USB image, kernels 7.1.7 (Belize) / 7.0.8 (Baikal), verified on Pro & Slim | Active (2026-10-23) | check repo | closest existing answer to *our* README goal → **read its whole guide** |
 | `meerzulee/omarchy-ps4` / `omarchy-psx` | Wayland/Hyprland desktop on PS4, FPKG-based boot manager, USB-first install flow | Active (2026-11-11) | check | different DE, but the **boot/install UX is the best in the scene** |

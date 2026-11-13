@@ -47,11 +47,15 @@ doctor (T-005) consumes it.
 
 **Goal:** eliminate BOOT-001 by making the kernel choice explicit and verifiable.
 
-**Spec:**
-- A data table `model/southbridge/fw → kernel candidate list`, ordered, with expected LED behaviour.
-- A writer script that copies the chosen `bzImage` + `initramfs.cpio.gz` to `/data/linux/boot/` **only via FTP**,
-  renames correctly, writes `bootargs.txt` from a template, and verifies checksums on device.
-- A pre-flight check that **no** `bzImage` exists on the USB (BOOT-003).
+**Spec (amended 2026-11-13, see `13-…` Q1/Q3 + D-08):**
+- Candidate table, pinned in `14-pinned-inputs.lock.yaml`: Aeolia/Belize → `feeRnt@7.0-Clean#8ec5c28` (A) and
+  `feeRnt@6.15.4-crashniels#3cba9d4` (B); Baikal → `feeRnt@5.4.247-dfaus#1fdfbd9`. **No** candidate from the
+  404 repos. The source tree's own `config` file is used as the base (kernel build scripts expect it).
+- A **layout validator/writer** for the two supported layouts (`usb_fat32` | `internal_ftp`), chosen from
+  `profile.yaml`, with `bootargs.txt` from a template and sha256 verification after writing.
+- A pre-flight that **refuses** a set with a `bzImage` in both locations (BOOT-003, rewritten), and prints the
+  sha256 of the kernel it will boot.
+- Write `kernel_repo`, `kernel_branch`, `kernel_commit`, `kernel_release` into the image manifest.
 **Acceptance:** 3/3 boots with the generated set (EXP-002); wrong-kernel case produces the documented
 white-light symptom with a clear message.
 **Verify:** EXP-002.
@@ -83,10 +87,12 @@ DS4 detected (EXP-010), DXVK/Proton versions pinned (APP-001), AVX2 package audi
 
 ## T-006 — Pinned PS4 Mesa bundle (P0)
 
-**Spec:** build Mesa at **25.3.5** and **26.0.4** (candidates) from upstream tags + the PS4 patch set
-(LIVERPOOL/GLADIUS PCI IDs as GFX7; raster config; libdrm additions). Install to `/opt/ps4-mesa/<ver>/`
-with an ICD JSON and a wrapper env (`LD_LIBRARY_PATH`, `VK_ICD_FILENAMES`, `LIBGL_DRIVERS_PATH`).
-Provide `ps4-mesa-select <ver>` and `ps4-mesa-check`.
+**Spec (amended 2026-11-13, see `13-…` Q2 + D-07):** build **Mesa 26.2.5 + libdrm 2.4.134** with patches
+`0001` (Liverpool/Gladius PCI IDs, GFX7 mapping, raster config `0x2a00161a`, RADV fast-clear predication) and
+`0002` (**RADV HiZ off** — the actual fix for GFX-002), into `/opt/ps4-mesa`, builder `debian:trixie` with
+LLVM 19. Verify both tarball SHA256s (in the lock file) before building. Select with the proven mechanism
+(`/etc/ld.so.conf.d/00-ps4-mesa.conf`, `VK_DRIVER_FILES=<icd>`, Xorg `modesetting`+`glamor`+`DRI 3`) and a
+`--undo`. Build **25.3.5** in parallel as the EXP-009 control. Document that the bundle has **no VA-API**.
 **Constraints:** do **not** replace distro Mesa; do not ship binaries built against glibc < 2.38 or > distro ABI.
 **Acceptance:** `glxinfo -B` shows LIVERPOOL; `vulkaninfo` shows 1.3; EXP-009 passes on the chosen version.
 **Verify:** EXP-001, EXP-003, EXP-009.

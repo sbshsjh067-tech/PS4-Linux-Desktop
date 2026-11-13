@@ -28,8 +28,9 @@ The README's first promise is a web browser; on this hardware the browser *is* t
 
 **Findings and rules**
 
-1. **Do not enable hardware video decoding by default.** UVD/H.264 is experimental, only on one board
-   family, and Chromium/Firefox flags for VA-API are fragile on AMD + Wayland [S18][S36].
+1. **Hardware video decoding is not merely experimental — the reference PS4 Mesa bundle is compiled with
+   `-Dgallium-va=disabled -Dvideo-codecs=`, i.e. VA-API does not exist in it at all** [S43]. Enabling flags
+   in the browser therefore cannot work; it must be built into Mesa first. Assume software decode.
 2. Prefer **H.264/AAC** sources (YouTube "stats for nerds" → avc1). VP9/AV1 at 1080p will drop frames on
    8 Jaguar cores [ESTIMATE, EXP-004].
 3. Cap parallel content: Firefox `dom.ipc.processCount=2`, disable pocket/telemetry, keep GPU process off if

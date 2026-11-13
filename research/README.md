@@ -57,6 +57,8 @@ A "fix" is only accepted when it has: **(a)** a root cause, **(b)** an issue ID,
 | `10-coding-tickets.md` | implementation-agnostic task specs handed to the coding chat |
 | `11-risks-legal.md` | bricking, data loss, ToS/legal, firmware policy, ethics |
 | `12-sources.md` | numbered source list `S01…` used everywhere |
+| `13-QA-coding-2026-11-13.md` | adjudication of the coding chat's questions, conflicts and the corrections we owe |
+| `14-pinned-inputs.lock.yaml` | **build lock**: kernel commits, Mesa/libdrm versions+sha256, patch blob SHAs, USB layouts, bootargs |
 | `backlog.yaml` | machine-readable backlog (same IDs as the docs) |
 | `HANDOFF-PROMPT.md` | paste-ready prompt for the coding chat + import commands + conflict protocol |
 | `profile.example.yaml` | per-console profile to fill in before any testing |

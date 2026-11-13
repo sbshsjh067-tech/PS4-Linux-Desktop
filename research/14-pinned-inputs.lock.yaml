@@ -1,0 +1,130 @@
+# 14 — Pinned inputs (build lock file)
+#
+# Every value below was read from the upstream repository on 2026-11-13 and is
+# meant to be consumed by the build scripts (T-002, T-006, T-017).
+# If a value cannot be re-fetched at build time, the build must FAIL, not fall back.
+# Re-verify quarterly (README §5 freshness policy).
+
+meta:
+  audited: 2026-11-13
+  auditor: research-workstream
+  policy: pin-by-commit + verify-sha256 + mirror-or-fail
+
+kernel:
+  primary:
+    repo: https://github.com/feeRnt/ps4-linux-12xx
+    branch: 7.0-Clean
+    commit: 8ec5c282abda91f6c2e4014de206105aa7912516
+    version: "7.0.0"
+    licence: GPL-2.0
+    why: >-
+      Only verified tree shipping drivers/ps4/ps4-fan.c (hwmon: temp1_input RO milli-C,
+      temp1_crit RW 45000-85000, fan1_input RO RPM), ps4-led.c, ps4-mesa-lock.c,
+      drivers/firmware/ps4-dmi.c and the full APCIe/ICC set.
+    verified_paths:
+      - drivers/ps4/ps4-fan.c
+      - drivers/ps4/ps4-led.c
+      - drivers/ps4/ps4-mesa-lock.c
+      - drivers/ps4/ps4-apcie.c
+      - drivers/ps4/icc/i2c.c
+      - drivers/firmware/ps4-dmi.c
+  fallback:
+    repo: https://github.com/feeRnt/ps4-linux-12xx
+    branch: 6.15.4-aeolia-belize-crashniels
+    commit: 3cba9d4db59422c8fc4dd55a39958def042e8816
+    version: "6.15.4"
+    licence: GPL-2.0
+    note: >-
+      Current working baseline of the implementation workstream. Has ICC/APCIe/UART but
+      NO ps4-fan.c -> fan must come from userspace ps4fancontrol until primary boots.
+  baikal_only:
+    - repo: https://github.com/feeRnt/ps4-linux-12xx
+      branch: 5.4.247-baikal-dfaus
+      commit: 1fdfbd9a4c5690602893f6d5f65e154c6d9ba711
+    - repo: https://github.com/meerzulee/linux-psx
+      tag: v6.18.44-psx-ps4-baikal2
+      commit: 61e2ad8437c6ea00634d1fefc7f7c4fe5ca887b0
+    - repo: https://github.com/meerzulee/linux-psx
+      tag: v7.2.11-psx-ps4-baikal-beta2
+      commit: c874f68db9287adb8f2a7b5d2d083ea000b27be9
+      note: 7.2 line is Baikal-only per upstream README
+
+loader:
+  status: unavailable
+  note: >-
+    ps4-linux/ps4-linux-loader is listed by the GitHub API (pushed 2026-11-12) but every
+    content/branch/tag call and `git ls-remote` returns 404 -> private or renamed.
+    We cannot audit it. Consume the binary the user already has, record its sha256 in the
+    profile, and do not make a build depend on fetching it.
+
+dead_upstream_do_not_depend:
+  - https://github.com/sony-jaguar-devs/ps4-linux   # repo not found (was ps4-multiboot's default KERNEL_REPO)
+  - https://github.com/ps4-linux/linux              # 404 on all content endpoints
+  - https://github.com/ps4-linux/ps4-linux-loader   # 404 on all content endpoints
+
+mesa:
+  builder_base: docker.io/library/debian:trixie   # glibc 2.41 -> that is the real floor
+  llvm: 19
+  prefix: /opt/ps4-mesa
+  candidate_a:
+    mesa: "26.2.5"
+    mesa_sha256: 794b3d1729075dae7ebd47c7283b7ca0cdb5dec668f7f11cc0a5d82f6138a0a5
+    libdrm: "2.4.134"
+    libdrm_sha256: ac5e74d157830eb8bee44c6a6bf3ad49774ef0dd2a72bdad74a8f20308b52a95
+    patches:
+      - repo: https://github.com/blue0x1/ps4-multiboot
+        path: patches/mesa/0001-ps4-liverpool-gladius.patch
+        blob_sha: 0cea1186d9d2b1d9cc1977f40075a729414a2c67
+        effect: >-
+          PCI IDs 0x9920/0x9922/0x9923 (LIVERPOOL) + 0x9924 (GLADIUS); STARSHA/STARSHP
+          addrlib ranges; GFX7 mapping; raster_config 0x2a00161a (+0x2e for Gladius);
+          LLVM target "bonaire"; RADV fast-clear-eliminate predication off.
+      - repo: https://github.com/blue0x1/ps4-multiboot
+        path: patches/mesa/0002-radv-ps4-no-hiz.patch
+        blob_sha: 6069650e6a14260917f451af533948700d630ba1
+        effect: >-
+          RADV: use_hiz = false on CHIP_LIVERPOOL/CHIP_GLADIUS. Root cause of GFX-002:
+          HiZ (HTILE) hangs the gfx ring on the first DXVK frame ("ring gfx timeout").
+  candidate_b:
+    mesa: "25.3.5"
+    note: field-proven on gfx7 Liverpool with DXVK (S08); control for EXP-009
+    llvm: "21"
+  candidate_c:
+    mesa: "26.0.4"
+    note: field-proven on gfx7 (S08); superseded by candidate A once 0002 is applied
+    llvm: "22"
+  build_flags_that_matter:
+    - "-Dgallium-drivers=radeonsi,zink,llvmpipe"
+    - "-Dvulkan-drivers=amd"
+    - "-Dgallium-va=disabled -Dvideo-codecs="   # NO video decode: do not claim VA-API
+    - "-Dglvnd=enabled -Dgbm=enabled -Dplatforms=x11,wayland"
+  selection:
+    ld_so_conf: /etc/ld.so.conf.d/00-ps4-mesa.conf
+    env: "VK_DRIVER_FILES=<prefix>/share/vulkan/icd.d/radeon_icd.x86_64.json"
+    xorg: "modesetting + glamor + DRI 3"
+    undo: "ps4-mesa-enable --undo"
+
+d3d_stack:
+  dxvk_max: "2.7.1"       # DXVK 3.x requires Vulkan 1.4; PS4 GPU is Vulkan 1.3 max
+  proton_max: "11.0"      # Proton 11 bundles DXVK 2.7.1
+  vkd3d_proton: excluded  # D3D12 not a supported target
+  fallback: "PROTON_USE_WINED3D=1 %command% -force-d3d11"   # OpenGL path, stable on gfx7
+
+usb_layouts:
+  A_self_contained:
+    table: mbr
+    partitions:
+      - {index: 1, fs: vfat, label: PS4BOOT, size: 512M, boot_flag: true, content: "bzImage + initramfs.cpio.gz + bootargs.txt"}
+      - {index: 2, fs: ext4, label: "<NAME>-PS4", size: rest, content: "root filesystem"}
+    root_discovery: "LABEL=<NAME>-PS4 (no root= in bootargs)"
+  B_internal_boot:
+    kernel_location: "/data/linux/boot/ via FTP"
+    usb_content: "root filesystem only"
+  rules:
+    - never leave a kernel in both locations
+    - refuse non-USB devices by TRAN=usb
+    - re-verify partition 1 still vfat after formatting partition 2 (counterfeit stick check)
+
+bootargs_reference:
+  verified_working_set: "panic=0 quiet loglevel=1 clocksource=tsc consoleblank=0 net.ifnames=0 radeon.dpm=0 amdgpu.dpm=0 drm.debug=0x4 log_buf_len=4M console=ttyS0,115200n8 console=tty0 video=HDMI-A-1:1920x1080@60D"
+  source: blue0x1/ps4-multiboot config/bootargs.txt (blob 346ec386936dcfd3afd66483840c62492e27f89e)

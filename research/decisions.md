@@ -40,3 +40,28 @@ Decisions are made by research and are binding for the coding chat until superse
 - **Date:** 2026-11-13 · **Status:** accepted
 - **Rationale:** the scene is full of folklore; most support pain comes from unverified assumptions.
 - **Consequences:** `09-experiments.md` gate; `results/INDEX.md` row required to close a ticket.
+
+## D-07 — Kernel source of record and Mesa build (supersedes parts of `03`/`07`)
+- **Date:** 2026-11-13 · **Status:** accepted
+- **Decision:**
+  - Kernel: `feeRnt/ps4-linux-12xx@7.0-Clean` = `8ec5c282abda91f6c2e4014de206105aa7912516` (primary),
+    `6.15.4-aeolia-belize-crashniels` = `3cba9d4db59422c8fc4dd55a39958def042e8816` (fallback/current baseline).
+  - Mesa: build **26.2.5** (SHA256 `794b3d17…`) + **libdrm 2.4.134** (SHA256 `ac5e74d1…`) with
+    `ps4-multiboot` patches `0001` (`0cea118`) + `0002` (`6069650`). Candidate B = Mesa 25.3.5 (control).
+  - Dead upstream (`sony-jaguar-devs/ps4-linux`, `ps4-linux/linux`, `ps4-linux/ps4-linux-loader`) is **not a
+    dependency**; `ps4-multiboot`'s default `KERNEL_REPO` is dead, so its build is not reproducible as published.
+- **Rationale:** only verifiable tree with fan/thermal hwmon + Mesa lock; only verified patch set; HiZ is the
+  actual cause of GFX-002, so a version workaround alone is insufficient.
+- **Consequences:** T-002/T-006/T-012 consume `14-pinned-inputs.lock.yaml`; builds fail rather than fall back.
+- **Refs:** `13-QA-coding-2026-11-13.md` §1, `S43`, `S44`
+
+## D-08 — Two kernel layouts, explicit and exclusive (amends D-01 scope, not its intent)
+- **Date:** 2026-11-13 · **Status:** accepted
+- **Decision:** support **(A)** kernel+initramfs on a FAT32 `PS4BOOT` partition of the USB, and **(B)** kernel in
+  `/data/linux/boot` via FTP. The layout is declared in `profile.yaml`; a set with a kernel in both places is
+  refused. **There is no "FTP-only" rule** — that was an unverified over-specification and is withdrawn.
+- **Rationale:** both layouts are shipped by maintained projects; the precedence of one loader cannot be
+  verified because the loader repos are unreadable.
+- **Consequences:** BOOT-003 rewritten (layout consistency, not precedence); T-002 becomes a layout validator,
+  not an FTP writer; USB-only disk policy (D-01) is unchanged.
+- **Refs:** `13-QA-coding-2026-11-13.md` §1 Q3, §3 C1/C2, `S43`

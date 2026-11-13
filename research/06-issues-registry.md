@@ -51,10 +51,16 @@ Template (copy this for new entries):
 - **Chosen:** (c) as default in images + (a/b) documented. Precedent: `ps4_rootwait` exists for slow USB [S17].
 - **Verification:** EXP-002 variant with a deliberately slow USB 2.0 stick → must still boot.
 
-### BOOT-003 — First boot mixes old files (USB kernel overrides `/data/linux/boot`) · `diagnosed`
-- **Root cause:** loader precedence: USB `bzImage` wins over internal boot dir [S16].
-- **Solution:** image policy forbids `bzImage` on the USB; the doctor script warns if found.
-- **Verification:** EXP-001 step 0 asserts no `bzImage` on USB.
+### BOOT-003 — Two kernel layouts, mixed together · `diagnosed` · **rewritten 2026-11-13**
+- **Original wording (withdrawn):** "USB `bzImage` always wins over `/data/linux/boot`". That came from a
+  single community note about one loader version; the loader repositories are now unreadable (404), so the
+  precedence cannot be verified and a rule must not rest on it. See `13-...` §3 C1.
+- **Real root cause:** there are two legitimate layouts — (A) kernel on a FAT32 `PS4BOOT` partition of the
+  USB, (B) kernel in `/data/linux/boot` via FTP — and a console that ends up with a kernel in *both* places
+  boots whichever the loader happens to prefer, producing unreproducible "it worked yesterday".
+- **Solution:** the layout is declared in `profile.yaml` (`boot.layout`); pre-flight refuses when a `bzImage`
+  exists in both locations; every shipped kernel carries a sha256 recorded in the manifest.
+- **Verification:** EXP-001 step 0 asserts the declared layout matches the files actually present.
 
 ### BOOT-004 — `vram.txt` written as `1` (GB) instead of `1024` (MB) · `diagnosed`
 - **Root cause:** loader v25 changed the unit convention; invalid values fall back silently to payload
@@ -100,10 +106,16 @@ Template (copy this for new entries):
 - **Verification:** EXP-003; pass = `renderer string` contains `LIVERPOOL`/`GLADIUS`, idle CPU ≤ 8 %.
 
 ### GFX-002 — GPU hang 10–20 s into a DXVK game · `diagnosed` · severity: high
-- **Root cause:** RADV pipeline compilation/execution on gfx7 with DXVK triggers a hang on some Mesa
-  builds; OpenGL and light Vulkan still work [S08].
-- **Options:** (a) Mesa 25.3.5; (b) Mesa 26.0.4; (c) newest Mesa (fails); (d) force `RADV_DEBUG=llvm`
-  or `RADV_PERFTEST=` tweaks; (e) run D3D9 titles via wined3d (slow, compatibility escape).
+- **Root cause (mechanistic, verified 2026-11-13):** RADV enables **HiZ (HTILE)** on Liverpool/Gladius, and
+  HiZ hangs the `gfx` ring on the first DXVK frame (*"ring gfx timeout"*); radeonsi's own HiZ path is fine.
+  `blue0x1/ps4-multiboot` patch `0002-radv-ps4-no-hiz.patch` sets `use_hiz = false` for both chips
+  [S43]. Field evidence: DXVK+ACO hangs after ~20 s while OpenGL is stable and `glxgears` shows 1621 fps
+  (no thermal/clock limit) [S08].
+- **Diagnostic that needs no rebuild:** launch the title with `RADV_DEBUG=nohiz`; if the hang disappears,
+  the cause is confirmed on that machine.
+- **Options:** (a) Mesa **26.2.5 + patch 0002** (fixes the defect); (b) Mesa 25.3.5 (field-proven,
+  control); (c) Mesa 26.0.4 (field-proven); (d) `RADV_DEBUG=llvm` → pipelines fail to compile, 
+  **not a fix** [S08]; (e) `PROTON_USE_WINED3D=1` (OpenGL, slower but stable) [S08].
 - **Chosen:** (a)/(b) pinned; (e) as documented fallback. Detect at runtime and refuse unsupported Mesa.
 - **Verification:** EXP-009 (420 s / 240 s stability runs reproducing the published protocol).
 
@@ -163,9 +175,15 @@ Template (copy this for new entries):
 - **Solution:** mask targets; disable dim/blank in Plasma power settings; document "cold boot only".
 - **Verification:** EXP-008 confirms masked units.
 
-### SYS-002 — Fan stays quiet while SoC gets hot · `diagnosed` · severity: high (hardware safety)
-- **Root cause:** default fan curve comes from the PS4 firmware; Linux needs the ICC driver + a tool to
-  set a threshold (45–85 °C), and not every kernel exposes it [S22][S23][S18].
+### SYS-002 — Fan stays quiet while SoC gets hot · `solution-proposed` · severity: high (hardware safety)
+- **Root cause:** default fan curve comes from the PS4 firmware; Linux needs the ICC driver + a threshold
+  (45–85 °C), and not every kernel exposes it [S22][S23][S18].
+- **Resolved upstream (2026-11-13):** `feeRnt@7.0-Clean` ships `drivers/ps4/ps4-fan.c`, a hwmon driver
+  exposing `temp1_input` (RO, milli-°C), `temp1_crit` (**RW, 45000–85000** = the ICC 45–85 °C range) and
+  `fan1_input` (RO, RPM). Its header also documents that the legacy `ps4fancontrol` corrupted the EMC fan
+  config (RPM reads 0 until a hard power cycle) because it wrote more than byte[5] [S43].
+  → On candidate A: use hwmon, do **not** write ICC from userspace. On the 6.15.4 fallback (no `ps4-fan.c`):
+  `ps4fancontrol` with the same 70–75 °C default and 65 °C floor.
 - **Options:** (a) kernel with hwmon/ICC fan support; (b) `ps4fancontrol --set 70`; (c) accept default
   (unsafe under sustained load); (d) setting too-low thresholds → permanent jet engine [S23].
 - **Chosen:** (a) as kernel requirement, (b) default 70–75 °C, warn about (d).
@@ -214,7 +232,8 @@ Template (copy this for new entries):
 - **Verification:** EXP-009 includes one D3D9 and one D3D11 title.
 
 ### APP-002 — Chromium videos drop frames / CPU 100 % · `diagnosed`
-- **Root cause:** no hardware decode by default; VP9/AV1 software decode on Jaguar is too slow.
+- **Root cause:** the reference PS4 Mesa bundle is built `-Dgallium-va=disabled -Dvideo-codecs=` → **VA-API is
+  compiled out**, not merely experimental [S43]; plus VP9/AV1 software decode on Jaguar is too slow.
 - **Solution:** prefer H.264 sources; enable VA-API only after EXP-005 proves UVD; limit tabs.
 - **Verification:** EXP-004.
 

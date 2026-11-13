@@ -5,10 +5,12 @@ Accessed **2026-11-13** unless stated. A source is "primary" when it is the proj
 release notes, or official documentation; community forums are secondary and marked `[REPORTED]` when used.
 
 > **Note on link rot:** several well-known PS4 Linux repositories move, get renamed, or go private.
-> During the 2026-11-13 audit, `github.com/ps4-linux/ps4-linux-loader`, `github.com/ps4-linux/linux` and
-> `github.com/sony-jaguar-devs/ps4-linux` returned **404** from our sandbox while their GitHub API records
-> were still visible. Treat them as *referenced but currently unreachable*: replicate anything we depend on
-> (kernel patches, loader) into our own storage before building on it. See `11-risks-legal.md` §5.
+> **Confirmed 2026-11-13 (second pass):** `git ls-remote` on `sony-jaguar-devs/ps4-linux` returns
+> *"Repository not found"*, and `ps4-linux/linux` / `ps4-linux/ps4-linux-loader` return 404 on every content,
+> branch and tag endpoint even though the repo objects are still listed by the API. They are **not usable
+> dependencies**: ps4-multiboot's default `KERNEL_REPO` points at the dead one, so its kernel step cannot run
+> as published. Replacement: `feeRnt/ps4-linux-12xx` (pins in `14-pinned-inputs.lock.yaml`).
+> See `11-risks-legal.md` §5 and `13-QA-coding-2026-11-13.md` §1.
 
 ## Kernel / boot
 
@@ -73,6 +75,13 @@ release notes, or official documentation; community forums are secondary and mar
 | S25 | superpsx (2026-09-20) + doctorglitch (2026-10) — GoldHEN 2.4b18.11/.12 for 13.52/13.02-13.50 | Article | Firmware → GoldHEN support matrix; 14.00 released 2026-09-16 |
 | S28 | `iHaiDeeZ/DolphinPS4` — README | Primary | Per-game FPS table on launch PS4 (GC 30/60, MK Wii 40–50, Galaxy 40–60); "CPU is the bottleneck" |
 | S32 | `blue0x1/EmuFive` — README + TechPowerUp coverage (2026-11-12) | Primary/Article | Jaguar lacks AVX2/FMA/BMI2 → `-march=btver2` builds; official AVX2 binaries die with "Illegal instruction" |
+
+## Verified during the 2026-11-13 audit (new)
+
+| ID | Source | Type | Used for |
+|---|---|---|---|
+| S43 | `blue0x1/ps4-multiboot` — `scripts/build-mesa.sh` (`1a87bec`), `docker/mesa.Dockerfile`, `patches/mesa/0001` (`0cea118`), `patches/mesa/0002` (`6069650`), `overlay-mesa/opt/ps4-mesa/bin/ps4-mesa-enable`, `config/bootargs.txt` (`346ec38`), `scripts/make-usb.sh`, `scripts/common.sh` | Primary (read in full) | Mesa 26.2.5 + libdrm 2.4.134 pins and SHA256; patch contents (PCI IDs, GFX7 map, raster config, RADV HiZ disable); `-Dgallium-va=disabled`; `/opt/ps4-mesa` selection mechanism; USB layout A; **dead default `KERNEL_REPO`** |
+| S44 | `feeRnt/ps4-linux-12xx` — tree listings for `7.0-Clean` (`8ec5c28`), `6.15.4-…` (`3cba9d4`), `6.18.21-rmuxnet-clean`, `5.4.247-baikal-dfaus`; `drivers/ps4/ps4-fan.c`, `drivers/ps4/ps4-mesa-lock.c` | Primary (read) | kernel pins; `ps4-fan.c` hwmon interface (`temp1_input`/`temp1_crit` 45000–85000/`fan1_input`) and the EMC-config corruption warning about legacy `ps4fancontrol`; `ps4-mesa-lock` token contract |
 
 ## Community hubs (context, not evidence)
 
