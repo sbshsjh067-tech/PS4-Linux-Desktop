@@ -58,6 +58,7 @@ A "fix" is only accepted when it has: **(a)** a root cause, **(b)** an issue ID,
 | `11-risks-legal.md` | bricking, data loss, ToS/legal, firmware policy, ethics |
 | `12-sources.md` | numbered source list `S01…` used everywhere |
 | `backlog.yaml` | machine-readable backlog (same IDs as the docs) |
+| `HANDOFF-PROMPT.md` | paste-ready prompt for the coding chat + import commands + conflict protocol |
 | `profile.example.yaml` | per-console profile to fill in before any testing |
 | `glossary.md` | vocabulary for newcomers in the coding chat |
 

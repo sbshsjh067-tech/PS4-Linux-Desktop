@@ -114,3 +114,90 @@ RECOMMENDED STARTING ORDER:
 - **"Reply with your understanding first"** catches misalignment before hours of wasted work.
 - **Work-order + experiment mapping** means every merged ticket has a proof attached, which is exactly
   the loop described in `AGENTS.md`.
+
+---
+
+## 4) If the coding chat cannot see `research/` (the "files not found" case)
+
+This happened once and it will happen again, because the two workstreams may live in **different clones**.
+The research lives on the public repo, in its own branch — it is **not** merged into the product branch.
+
+**Cause of the confusion:** the research branch was created from the same `Initial commit` but contains only
+`README.md`, `AGENTS.md` and `research/`. The coding workspace is a *separate* clone with 90+ files on `main`
+and **no remote configured**, so `find`, `git ls-files` and `git branch -a` there will never show it.
+
+**Fix — import only the research paths, touch nothing else:**
+
+```bash
+cd /path/to/the/coding/repo
+
+# 1. fetch the research branch (no branch switch, no merge commit)
+git fetch https://github.com/sbshsjh067-tech/PS4-Linux-Desktop.git arena/8145ca4a-ps4-linux-desktop
+
+# 2. import ONLY the research files into the current working tree
+git checkout FETCH_HEAD -- research AGENTS.md
+
+# 3. verify (expect 20 files in research/)
+ls research/ | wc -l
+git status --short | head
+```
+
+**Do not** import `README.md` from that branch — it is a research-only landing page and would overwrite the
+product README. The research branch's `README.md` is not part of the hand-off.
+
+**Alternative (no network access):** paste the contents of these six files into the chat, in this order:
+`AGENTS.md`, `research/00-executive-summary.md`, `research/10-coding-tickets.md`,
+`research/06-issues-registry.md`, `research/backlog.yaml`, `research/decisions.md`.
+
+**Then continue normally:** AGENTS → 00 → 10 → 06 → 02/03/04 → backlog/decisions, and reply with the
+understanding summary + plan + conflicts **before** any code.
+
+---
+
+## 5) Reconciliation when prior work already exists (expected, not a failure)
+
+The coding workstream may already have a Phase-0 build (e.g. another kernel version, a diagnostic initramfs,
+a desktop image, a PS4 package). That is **good news**, not a conflict to hide — but the merge follows rules.
+
+### 5.1 Precedence
+
+1. **Measured evidence beats documentation.** Any number produced by a real run (boot time, idle RAM,
+  renderer string, fps) overrides a `[VERIFIED]`/`[ESTIMATE]` line in the handbook.
+2. **Documents do not silently change** — the run goes into `research/results/` first, then the registry and
+  the handbook are updated, then a decision is re-opened if needed.
+3. **Decisions `D-01…D-06` are binding until amended by a new entry in `research/decisions.md`.** The coding
+  chat cannot amend them; it reports the contradiction and asks.
+4. Safety decisions (`D-01` no internal-disk writes, `D-02` firmware frozen, thermal floor) are **not**
+  negotiable by evidence — they are about preventing irreversible damage, not about performance.
+
+### 5.2 How to report a conflict (template the coding chat must use)
+
+```yaml
+conflict:
+  ref: D-04            # decision or handbook line
+  build_does: "ships Mesa 26.0.8 / no pinned DXVK"
+  evidence: "results/EXP-009/2026-11-14/ (GPU hang at 14 s)"
+  proposed_resolution: "adopt D-04 pins; rebuild image with /opt/ps4-mesa/25.3.5"
+  needs_research_decision: true
+```
+
+### 5.3 Known contradictions to expect on day one
+
+| Handbook says | A Phase-0 build may already do | Resolution |
+|---|---|---|
+| Kernel from the 7.x PS4 trees (`03`, `07`) | boot a 6.15.4-based kernel | both are valid; keep the *working* one as the baseline, register the alternative as a candidate in `T-002` matrix, decide by EXP-002 |
+| `D-01`: USB root only, internal disk read-only | a build that partitions or installs to the internal disk | **stop that path**; re-run on USB. Data loss is irreversible (Orbis + saves) |
+| `D-04`: Mesa pinned (25.3.5 / 26.0.4), DXVK ≤ 2.7.1, Proton ≤ 11 | distro Mesa, whatever DXVK/Proton ships | must be pinned before Steam work; record the current versions first (`T-007` audit) |
+| `D-05`: Plasma product + XFCE fallback | a Debian+Plasma image exists | keep it; add the XFCE recovery session and the thin profile (`T-008`, `T-009`) |
+| Idle RAM target ≤ 900 MB (`04` §7) | e.g. "933 MiB desktop" | clarify the unit (RAM at idle? image size?) and record it as EXP-003 evidence either way |
+| 14-day-old `README.md` claim of "fully functional" | reality is partial | `00-executive-summary.md` §2 is the claim set; docs must match it |
+
+### 5.4 What the coding chat must send back after reading
+
+1. Understanding summary (≤ 20 lines).
+2. Plan for `T-001 → T-004 → T-002 → T-003 → T-006`.
+3. A `conflict:` block for **every** contradiction with the existing build, including ones it believes are
+   harmless.
+4. Anything it needs from research before writing code.
+
+Only then does implementation start.
