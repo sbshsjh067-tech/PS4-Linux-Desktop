@@ -1,0 +1,287 @@
+# Machine-readable backlog. IDs MUST match 06-issues-registry.md and 10-coding-tickets.md.
+# status: open | diagnosed | solution-proposed | in-implementation | verified | closed | wontfix
+# severity: blocker | high | medium | low
+version: 1
+updated: 2026-11-13
+
+decisions:
+  - id: D-01
+    title: USB root filesystem only; internal disk read-only for the OS
+    rationale: prevents loss of Orbis and game saves; see 02-boot-chain §6, 11-risks §3
+  - id: D-02
+    title: Firmware frozen at the jailbroken version
+    rationale: updates are irreversible and can close the exploit; see 11-risks §2
+  - id: D-03
+    title: Default VRAM payload 1024 MB; 2048 MB only for gaming/emulation profiles
+    rationale: memory budget table in 01-hardware §4
+  - id: D-04
+    title: Mesa pinned and upgraded only through experiments
+    rationale: RADV regressions on gfx7 break DXVK; see 03-graphics §3
+  - id: D-05
+    title: KDE Plasma is the product desktop; XFCE is the guaranteed recovery desktop
+    rationale: 04-desktop §4
+  - id: D-06
+    title: Every claim measured by a protocol in 09-experiments.md
+    rationale: research discipline
+
+issues:
+  - id: BOOT-001
+    title: Light stays white, Linux never starts
+    status: diagnosed
+    severity: blocker
+    scope: {models: [aeolia, belize, baikal]}
+    chosen_solution: firmware-agnostic loader v25+ with runtime southbridge detection; kernel matrix fallback
+    verification: EXP-002
+    ticket: T-002
+  - id: BOOT-002
+    title: "mounting LABEL=… failed in rescue shell"
+    status: diagnosed
+    severity: high
+    chosen_solution: rootwait increase + label/UUID verification in image
+    verification: EXP-002
+    ticket: T-004
+  - id: BOOT-003
+    title: USB bzImage silently overrides internal boot dir
+    status: diagnosed
+    severity: high
+    chosen_solution: image policy + doctor warning when bzImage found on USB
+    verification: EXP-002
+    ticket: T-002
+  - id: BOOT-004
+    title: vram.txt unit mismatch (GB vs MB)
+    status: diagnosed
+    severity: medium
+    chosen_solution: writer + post-boot verification of effective VRAM
+    verification: EXP-001
+    ticket: T-003
+  - id: BOOT-005
+    title: 1-2 minute black screen after payload is normal
+    status: closed
+    severity: low
+    chosen_solution: documentation + optional LED/beep progress
+    verification: EXP-002
+    ticket: T-013
+  - id: BOOT-006
+    title: Black screen at display-manager start
+    status: diagnosed
+    severity: high
+    chosen_solution: PS4 HDMI settings off (HDR/DeepColor), HDMI keep-alive service, TTY rescue, Wayland fallback
+    verification: EXP-008
+    ticket: T-008
+  - id: BOOT-007
+    title: 14.00 exploit host can wedge console until cold start
+    status: open
+    severity: medium
+    scope: {fw: "14.00+"}
+    chosen_solution: document; stay on <=13.52 when possible
+    verification: n/a
+    ticket: null
+  - id: BOOT-008
+    title: Reboot from Linux returns to Orbis
+    status: closed
+    severity: low
+    chosen_solution: documented by design; one-command payload sender
+    verification: n/a
+    ticket: T-014
+
+  - id: GFX-001
+    title: Desktop slow, software rendering (llvmpipe)
+    status: diagnosed
+    severity: blocker
+    chosen_solution: pinned PS4-patched Mesa in private prefix + doctor detection
+    verification: EXP-003
+    ticket: T-006
+  - id: GFX-002
+    title: GPU hang 10-20 s into DXVK game
+    status: diagnosed
+    severity: high
+    chosen_solution: Mesa 25.3.5 or 26.0.4 pinned; wined3d fallback
+    verification: EXP-009
+    ticket: T-006
+  - id: GFX-003
+    title: Corrupted scan-out on some Belize units
+    status: diagnosed
+    severity: medium
+    chosen_solution: AMD_DEBUG=notiling toggle in doctor
+    verification: EXP-006
+    ticket: T-005
+  - id: GFX-004
+    title: DXVK 3.x / Vulkan 1.4 demand
+    status: diagnosed
+    severity: high
+    chosen_solution: pin DXVK <=2.7.1, Proton <=11, block VKD3D default
+    verification: EXP-009
+    ticket: T-007
+  - id: GFX-005
+    title: Plasma compositor black screen after Mesa update
+    status: diagnosed
+    severity: medium
+    chosen_solution: pinning + upgrade gate (EXP-003/008)
+    verification: EXP-008
+    ticket: T-007
+  - id: GFX-006
+    title: Pro/Gladius underperformance on old kernels
+    status: diagnosed
+    severity: low
+    scope: {models: [belize_pro]}
+    chosen_solution: kernel with Gladius register fixes
+    verification: EXP-003
+    ticket: T-002
+
+  - id: NET-001
+    title: Wi-Fi absent
+    status: diagnosed
+    severity: medium
+    chosen_solution: kernel branch per chip; Ethernet first; USB dongle documented
+    verification: EXP-011
+    ticket: T-011
+  - id: NET-002
+    title: Wi-Fi fails with MAC randomization / WPA3
+    status: diagnosed
+    severity: medium
+    chosen_solution: NM override (no randomization, preserve MAC), prefer 2.4GHz WPA2
+    verification: EXP-011
+    ticket: T-011
+  - id: NET-003
+    title: Ethernet link up but no traffic
+    status: reported
+    severity: medium
+    chosen_solution: force 100Mb full duplex via NM/ethtool helper
+    verification: EXP-011
+    ticket: T-011
+  - id: NET-004
+    title: Wi-Fi dead after Orbis association across kexec
+    status: reported
+    severity: medium
+    chosen_solution: disconnect Wi-Fi in Orbis before payload; Ethernet
+    verification: EXP-011
+    ticket: T-011
+
+  - id: SYS-001
+    title: Suspend breaks the system
+    status: wontfix
+    severity: medium
+    chosen_solution: mask sleep targets; document cold-boot-only
+    verification: EXP-008
+    ticket: T-008
+  - id: SYS-002
+    title: Fan stays quiet while hot
+    status: diagnosed
+    severity: high
+    chosen_solution: kernel with ICC/hwmon fan + ps4fancontrol 70-75C, floor 65C
+    verification: EXP-012
+    ticket: T-012
+  - id: SYS-003
+    title: Clock wrong (1970)
+    status: diagnosed
+    severity: medium
+    chosen_solution: systemd-timesyncd enabled; manual fallback
+    verification: EXP-002
+    ticket: T-016
+  - id: SYS-004
+    title: USB rootfs goes read-only / IO errors
+    status: diagnosed
+    severity: high
+    chosen_solution: ext4 commit=30 noatime errors=remount-ro; fsck on boot; quality media
+    verification: EXP-013
+    ticket: T-004
+  - id: SYS-005
+    title: OOM with 4GB VRAM payload
+    status: diagnosed
+    severity: medium
+    chosen_solution: payload/workload table; zram
+    verification: EXP-003
+    ticket: T-003
+  - id: SYS-006
+    title: HDMI audio missing
+    status: open
+    severity: medium
+    chosen_solution: USB audio default; track kernel HDMI audio
+    verification: EXP-010
+    ticket: T-015
+  - id: SYS-007
+    title: Bluetooth pairing lost each boot
+    status: diagnosed
+    severity: medium
+    chosen_solution: re-pair helper; prefer USB
+    verification: EXP-010
+    ticket: T-015
+  - id: SYS-008
+    title: Internal installs consume 16GB+ per distro
+    status: diagnosed
+    severity: low
+    chosen_solution: USB installs by default
+    verification: n/a
+    ticket: T-004
+
+  - id: APP-001
+    title: Steam game black screen/crash
+    status: diagnosed
+    severity: high
+    chosen_solution: force Proton <=11; per-game overrides; DXVK audit
+    verification: EXP-009
+    ticket: T-015
+  - id: APP-002
+    title: Browser video drops frames / CPU 100%
+    status: diagnosed
+    severity: medium
+    chosen_solution: H.264 sources; VA-API only after EXP-005; tab limits
+    verification: EXP-004
+    ticket: T-015
+  - id: APP-003
+    title: "Illegal instruction (core dumped)"
+    status: diagnosed
+    severity: high
+    chosen_solution: -march=btver2 rebuilds; AVX2 package audit
+    verification: EXP-001
+    ticket: T-005
+  - id: APP-004
+    title: LibreOffice slow cold start
+    status: diagnosed
+    severity: low
+    chosen_solution: tuned profile (no Java/OpenCL/GL)
+    verification: EXP-014
+    ticket: T-015
+  - id: APP-005
+    title: Dolphin Wii titles limited
+    status: diagnosed
+    severity: low
+    chosen_solution: recommended settings; frame limit Auto 60/30
+    verification: EXP-015
+    ticket: T-015
+
+tickets:
+  - {id: T-001, prio: P0, title: "Profile collector & hardware probe", status: not-started}
+  - {id: T-002, prio: P0, title: "Kernel matrix + boot-file writer", status: not-started}
+  - {id: T-003, prio: P0, title: "VRAM policy", status: not-started}
+  - {id: T-004, prio: P0, title: "USB rootfs layout", status: not-started}
+  - {id: T-005, prio: P0, title: "ps4-doctor", status: not-started}
+  - {id: T-006, prio: P0, title: "Pinned PS4 Mesa bundle", status: not-started}
+  - {id: T-007, prio: P1, title: "Version freeze", status: not-started}
+  - {id: T-008, prio: P1, title: "Plasma thin profile", status: not-started}
+  - {id: T-009, prio: P1, title: "XFCE recovery", status: not-started}
+  - {id: T-010, prio: P1, title: "Graphics self-test", status: not-started}
+  - {id: T-011, prio: P1, title: "Network defaults", status: not-started}
+  - {id: T-012, prio: P1, title: "Thermal & fan profile", status: not-started}
+  - {id: T-013, prio: P2, title: "Boot progress indicator", status: not-started}
+  - {id: T-014, prio: P2, title: "Payload delivery helper", status: not-started}
+  - {id: T-015, prio: P1, title: "Application defaults", status: not-started}
+  - {id: T-016, prio: P1, title: "Locale/RTL/timesync", status: not-started}
+  - {id: T-017, prio: P2, title: "Reproducible build + mirrors", status: not-started}
+  - {id: T-018, prio: P1, title: "User guide", status: not-started}
+
+experiments:
+  - {id: EXP-001, title: "Baseline facts", status: not-run}
+  - {id: EXP-002, title: "Boot latency & reliability", status: not-run}
+  - {id: EXP-003, title: "Desktop performance & memory", status: not-run}
+  - {id: EXP-004, title: "Browser workload", status: not-run}
+  - {id: EXP-005, title: "amdgpu.dpm=1 trial", status: not-run}
+  - {id: EXP-006, title: "notiling scan-out trial", status: not-run}
+  - {id: EXP-008, title: "Stability soak", status: not-run}
+  - {id: EXP-009, title: "Steam/DXVK gate", status: not-run}
+  - {id: EXP-010, title: "Peripheral matrix", status: not-run}
+  - {id: EXP-011, title: "Network matrix", status: not-run}
+  - {id: EXP-012, title: "Thermal stress", status: not-run}
+  - {id: EXP-013, title: "Storage resilience", status: not-run}
+  - {id: EXP-014, title: "Office workload", status: not-run}
+  - {id: EXP-015, title: "Emulation", status: not-run}
