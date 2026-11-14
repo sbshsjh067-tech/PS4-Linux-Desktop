@@ -64,8 +64,16 @@
 
 ## 4. الملفات النهائية: ما هو موجود كرابط وما هو غير موجود
 
-### 4.1 ملف PKG — الرابط المباشر الوحيد
-لا يوجد URL عام للـ`.pkg` نفسه (لم يُرفع إلى أي استضافة عامة دائمة)؛ التسليم الرسمي هو الـartifact:
+### 4.1 ملف PKG — رابط تنزيل مباشر (Release asset)
+الآن يوجد رابط مباشر يعمل بلا تسجيل دخول، وهو نفس بايتات البناء الناجح (لم يُعَد البناء):
+
+- **الملف:** https://github.com/sbshsjh067-tech/PS4-Linux-Desktop/releases/download/delivery-43642717115/IV0000-BREW00001_00-PS4LDESKTOP00000.pkg
+- **الحجم:** 16,908,288 بايت
+- **SHA-256:** `c1197b29202d1d53770127f03ab9029d508bb036014e7d544b2926d95acb82eb`
+- **SHA256SUMS:** https://github.com/sbshsjh067-tech/PS4-Linux-Desktop/releases/download/delivery-43642717115/SHA256SUMS
+- صفحة الإصدار: https://github.com/sbshsjh067-tech/PS4-Linux-Desktop/releases/tag/delivery-43642717115
+
+> بطاقة الـartifact الأصلية (تبقى كسجل للبناء):
 
 ```
 gh run download 43642717115 -R sbshsjh067-tech/PS4-Linux-Desktop \
@@ -78,7 +86,7 @@ gh run download 43642717115 -R sbshsjh067-tech/PS4-Linux-Desktop \
 - أُنتج فعلًا في **Stage 5** (Debian 12 bookworm، `ROOTFS_PROFILE=xorg`، `ROOTFS_SIZE=6G`) ونجح.
 - لكنه **غير مُدرج في أي artifact** (الـworkflow يرفع فقط `bzImage`/`kexec`/`eboot`/PRX والـ`.pkg`)، و**غير مرفوع** إلى tmpfiles.org (الرفع يخصّ الـ`.pkg` فقط).
 - لذلك: لا رابط مباشر لـ`linux.img` اليوم. قيمة SHA-256 الخاصة به **مسجّلة** في `SHA256SUMS` (داخل artifact التقارير) عبر `record_artifact "Debian … ext4 root filesystem (linux.img)"`.
-- لإنتاج نسخة قابلة للتحميل لاحقًا (دون إعادة بناء الـ.pkg): رفع الـ`linux.img` كـartifact أو إلى تخزين خارجي — قرار لم يُنفّذ بعد.
+- **SHA-256 لـ`linux.img` = `f29539ce2965af44d09569f90cd5b106576c4f3c9e3f04a0f2a3555e07a1ddd5`** (من `SHA256SUMS`)، لكن الملف نفسه غير منشور. لرفعه لاحقًا: أضِفه إلى خطوة الرفع — قرار لم يُنفّذ بعد.
 
 ### 4.3 رابط tmpfiles.org — موجود لكن غير قابل للقراءة من هنا
 - الرابط الحقيقي مكتوب في **`pkg-upload.json`** (داخل artifact التقارير) وظهر في سجل Stage 8 وفي ملخّص الـjob.
