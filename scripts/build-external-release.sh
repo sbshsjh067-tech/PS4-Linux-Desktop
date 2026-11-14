@@ -704,7 +704,7 @@ liborbispkg_pkgtool() {
     mkdir -p "$WORK_DIR/bin"
     {
         printf '#!/bin/sh\n'
-        printf 'exec dotnet "%s" "\$@"\n' "$dll"
+        printf 'exec dotnet "%s" "$@"\n' "$dll"
     } > "$WORK_DIR/bin/PkgTool.Core"
     chmod +x "$WORK_DIR/bin/PkgTool.Core"
     echo "$WORK_DIR/bin/PkgTool.Core"
@@ -788,6 +788,8 @@ build_pkg_step() {
     fi
     [[ -x "$pkgtool" ]] || die "no usable PkgTool.Core (neither a from-source build nor the toolchain binary)"
 
+    grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release 2>/dev/null | sed 's/^/    os: /' || true
+    { have openssl && openssl version; } 2>&1 | sed 's/^/    openssl: /' || true
     log ".NET diagnostics (needed to run the from-source PkgTool.Core):"
     { have dotnet && dotnet --version; } 2>&1 | sed 's/^/    dotnet: /' || true
     { have dotnet && dotnet --list-runtimes; } 2>&1 | head -5 | sed 's/^/    runtime: /' || true
@@ -812,6 +814,37 @@ build_pkg_step() {
         export CLR_OPENSSL_VERSION_OVERRIDE=3
         run_packager "$pkgtool" "$report"
         built="$PKG_BUILT_RESULT"
+    fi
+
+    if [[ "$built" != "True" ]] && grep -q "libssl" "$ART_DIR/pkg-build.stderr" 2>/dev/null; then
+        # The CLR only probes libssl.so.1.1 / libssl.so.3. Distributions newer than
+        # Ubuntu 24.04 ship a higher soname (libssl.so.4), which the CLR rejects with
+        # "No usable version of libssl was found". Unpack an OpenSSL 3 runtime next
+        # to the tool and point the loader at it; nothing on the host is modified.
+        local ossl_root="$WORK_DIR/openssl3" ossl_lib=""
+        if ! ldconfig -p 2>/dev/null | grep -q 'libssl\.so\.3'; then
+            log "no libssl.so.3 in the loader cache - fetching an OpenSSL 3 runtime"
+            mkdir -p "$ossl_root" "$WORK_DIR/deb"
+            local deb=""
+            for cand in libssl3 libssl3t64; do
+                if ( cd "$WORK_DIR/deb" && apt-get download "$cand" >/dev/null 2>&1 ); then
+                    deb="$(ls -t "$WORK_DIR"/deb/"$cand"_*.deb 2>/dev/null | head -1)"
+                fi
+                [[ -n "$deb" ]] && break
+            done
+            if [[ -n "$deb" ]]; then
+                dpkg-deb -x "$deb" "$ossl_root" 2>/dev/null || true
+                ossl_lib="$(find "$ossl_root" -name 'libssl.so.3' -printf '%h\n' 2>/dev/null | head -1)"
+            fi
+            if [[ -n "$ossl_lib" ]]; then
+                export LD_LIBRARY_PATH="$ossl_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                log "using the bundled OpenSSL 3 runtime in $ossl_lib"
+                run_packager "$pkgtool" "$report"
+                built="$PKG_BUILT_RESULT"
+            else
+                warn "could not obtain an OpenSSL 3 runtime (apt-get download failed)"
+            fi
+        fi
     fi
 
     if [[ "$built" != "True" && "$pkgtool" != "$TOOLCHAIN_ROOT/bin/linux/PkgTool.Core" ]]; then

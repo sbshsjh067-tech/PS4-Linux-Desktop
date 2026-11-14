@@ -28,7 +28,7 @@ env:
 jobs:
   diagnose:
     name: Rebuild packaging stages only
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # .NET 8 needs the OpenSSL 3 sonames (libssl.so.3)
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4

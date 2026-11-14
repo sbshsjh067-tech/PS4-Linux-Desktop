@@ -106,6 +106,16 @@ def main(argv: list[str]) -> int:
         if failed:
             print("::error title=pkg-report missing prerequisites::" + escape("\n".join(failed)))
 
+    facts = [
+        ln.strip()
+        for ln in lines
+        if ln.strip().startswith(("os:", "openssl:", "dotnet:", "runtime:", "pkg:", "libssl", "libcrypto"))
+        or "libssl.so" in ln
+        or "libcrypto.so" in ln
+    ][:25]
+    if facts:
+        print("::notice title=runner-facts::" + escape("\n".join(facts)))
+
     probe = Path("artifacts/external/pkgtool-probe.out")
     if probe.is_file():
         tail = probe.read_text(errors="replace").strip().splitlines()[:40]

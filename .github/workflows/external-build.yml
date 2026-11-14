@@ -60,7 +60,7 @@ env:
 jobs:
   verify:
     name: Repository unit tests (TEST A..N)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # .NET 8 needs the OpenSSL 3 sonames (libssl.so.3)
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -80,7 +80,7 @@ jobs:
   external-build:
     name: Build kernel + linux.img + fPKG (ubuntu-24.04)
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # .NET 8 needs the OpenSSL 3 sonames (libssl.so.3)
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
