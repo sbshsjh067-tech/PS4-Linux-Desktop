@@ -84,6 +84,26 @@ if [[ -n "$DL_LEN" && "$DL_LEN" != "$SIZE" ]]; then
     STATUS="size-mismatch (content-length $DL_LEN != $SIZE)"
 fi
 
+# Strongest check available: pull the file back through the public URL and
+# compare it byte-for-byte with what we uploaded.
+DL_SHA="unknown"
+DL_SIZE="0"
+if [[ "$DL_CODE" == "200" ]]; then
+    log "downloading the delivered file back from tmpfiles.org"
+    if curl -sSL --max-time 600 -o "$WORK/redownload.pkg" "$DIRECT_URL"; then
+        DL_SIZE="$(stat -c %s "$WORK/redownload.pkg")"
+        DL_SHA="$(sha256sum "$WORK/redownload.pkg" | cut -d' ' -f1)"
+        log "redownloaded size=$DL_SIZE sha256=$DL_SHA"
+        if [[ "$DL_SHA" == "$SHA" && "$DL_SIZE" == "$SIZE" ]]; then
+            STATUS="verified (downloaded from the public URL and byte-identical)"
+        else
+            STATUS="ROUND-TRIP MISMATCH (served sha256=$DL_SHA size=$DL_SIZE)"
+        fi
+    else
+        STATUS="direct link answered 200 but the download failed"
+    fi
+fi
+
 printf '%s\n' \
     "url=$PAGE_URL" \
     "direct_url=$DIRECT_URL" \
@@ -92,6 +112,8 @@ printf '%s\n' \
     "page_http=$PAGE_CODE" \
     "direct_http=${DL_CODE:-none}" \
     "direct_content_length=${DL_LEN:-unknown}" \
+    "download_sha256=$DL_SHA" \
+    "download_size=$DL_SIZE" \
     "status=$STATUS" \
     > "$WORK/TMPFILES-URL.txt"
 cat "$WORK/TMPFILES-URL.txt" >&2
@@ -100,10 +122,10 @@ gh release upload "$TAG" "$WORK/TMPFILES-URL.txt" -R "$REPO" --clobber
 
 gh release view "$TAG" -R "$REPO" --json body -q .body > "$WORK/body.md" || : > "$WORK/body.md"
 python3 - "$WORK/body.md" "$PAGE_URL" "$DIRECT_URL" "$SIZE" "$SHA" "$STATUS" \
-        "${DL_CODE:-none}" "${DL_LEN:-unknown}" <<'PY'
+        "${DL_CODE:-none}" "${DL_LEN:-unknown}" "$DL_SHA" "$DL_SIZE" <<'PY'
 import re, sys
 
-body_path, page, direct, size, sha, status, code, clen = sys.argv[1:9]
+body_path, page, direct, size, sha, status, code, clen, dl_sha, dl_size = sys.argv[1:11]
 body = open(body_path, encoding="utf-8").read() if body_path else ""
 body = re.split(r"\n## tmpfiles\.org mirror\n", body)[0].rstrip()
 body += "\n\n## tmpfiles.org mirror\n\n"
@@ -114,6 +136,8 @@ body += f"| size | {size} bytes |\n"
 body += f"| sha256 | `{sha}` |\n"
 body += f"| direct HTTP | {code} |\n"
 body += f"| direct content-length | {clen} |\n"
+body += f"| re-download size | {dl_size} bytes |\n"
+body += f"| re-download sha256 | `{dl_sha}` |\n"
 body += f"| status | {status} |\n"
 open(body_path, "w", encoding="utf-8").write(body)
 print(body[-600:])
@@ -124,3 +148,8 @@ gh release edit "$TAG" -R "$REPO" --notes-file "$WORK/body.md"
 echo "::notice title=tmpfiles-url::${PAGE_URL}"
 echo "::notice title=tmpfiles-direct::${DIRECT_URL} (http=${DL_CODE:-none} content-length=${DL_LEN:-unknown})"
 echo "::notice title=tmpfiles-file::size=${SIZE} sha256=${SHA} status=${STATUS}"
+echo "::notice title=tmpfiles-roundtrip::downloaded size=${DL_SIZE} sha256=${DL_SHA}"
+if [[ "$STATUS" == ROUND-TRIP* || "$STATUS" == "direct link answered"* ]]; then
+    echo "::error title=tmpfiles delivery::${STATUS}"
+    exit 1
+fi
