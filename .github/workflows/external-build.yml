@@ -102,6 +102,14 @@ jobs:
             e2fsprogs debootstrap libicu-dev util-linux file binutils openssl
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dotnet-sdk-8.0 \
             || echo "dotnet-sdk-8.0 unavailable (only needed for the LibOrbisPkg fallback)"
+          # The CLR needs the OpenSSL 3 runtime sonames (libssl.so.3/libcrypto.so.3);
+          # the package name differs between releases (libssl3 vs libssl3t64).
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libssl3t64 libcrypto3t64 openssl \
+            || sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                 libssl3 libcrypto3 openssl \
+            || echo "OpenSSL runtime package unavailable"
+          ldconfig -p | grep -E 'libssl|libcrypto' || true
 
       - name: "Reuse bzImage from a previous run"
         if: ${{ github.event.inputs.reuse_kernel_run_id != '' }}

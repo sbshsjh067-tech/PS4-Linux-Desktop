@@ -5,7 +5,7 @@ name: External Build — packaging diagnosis (reuses an existing bzImage)
 # can be pinpointed in minutes instead of rebuilding the kernel first.
 #
 # It never uploads anything. Triggered by pushing a change to this file.
-# Revision: 6 (forced invariant globalization for .NET).
+# Revision: 7 (.NET/OpenSSL diagnostics + explicit libssl3 runtime).
 
 on:
   workflow_dispatch:
@@ -42,6 +42,12 @@ jobs:
             python3 e2fsprogs debootstrap libicu-dev util-linux file binutils openssl
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dotnet-sdk-8.0 \
             || echo "dotnet unavailable"
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libssl3t64 libcrypto3t64 openssl \
+            || sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                 libssl3 libcrypto3 openssl \
+            || echo "OpenSSL runtime package unavailable"
+          ldconfig -p | grep -E 'libssl|libcrypto' || true
 
       - name: Fetch boot assets from the earlier run
         uses: actions/download-artifact@v4

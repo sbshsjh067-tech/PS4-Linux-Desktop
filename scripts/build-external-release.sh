@@ -788,6 +788,12 @@ build_pkg_step() {
     fi
     [[ -x "$pkgtool" ]] || die "no usable PkgTool.Core (neither a from-source build nor the toolchain binary)"
 
+    log ".NET diagnostics (needed to run the from-source PkgTool.Core):"
+    { have dotnet && dotnet --version; } 2>&1 | sed 's/^/    dotnet: /' || true
+    { have dotnet && dotnet --list-runtimes; } 2>&1 | head -5 | sed 's/^/    runtime: /' || true
+    ldconfig -p 2>/dev/null | grep -Ei 'libssl|libcrypto' | sed 's/^/    /' || log "    no libssl/libcrypto in the loader cache"
+    { dpkg -l 2>/dev/null | grep -E 'libssl|libcrypto|dotnet' | awk '{print $2, $3}'; } | sed 's/^/    pkg: /' || true
+
     log "PkgTool.Core: $pkgtool"
     if [[ -x "$pkgtool" ]]; then
         local probe_rc=0
@@ -799,6 +805,14 @@ build_pkg_step() {
     PKG_BUILT_RESULT="False"
     run_packager "$pkgtool" "$report"
     local built="$PKG_BUILT_RESULT"
+
+    if [[ "$built" != "True" && -n "$(command -v dotnet || true)" ]] && \
+       grep -q "libssl" "$ART_DIR/pkg-build.stderr" 2>/dev/null; then
+        warn "OpenSSL not found by the CLR - retrying with CLR_OPENSSL_VERSION_OVERRIDE=3"
+        export CLR_OPENSSL_VERSION_OVERRIDE=3
+        run_packager "$pkgtool" "$report"
+        built="$PKG_BUILT_RESULT"
+    fi
 
     if [[ "$built" != "True" && "$pkgtool" != "$TOOLCHAIN_ROOT/bin/linux/PkgTool.Core" ]]; then
         warn "packaging with the from-source PkgTool.Core failed; retrying with the toolchain binary"

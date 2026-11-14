@@ -106,6 +106,12 @@ def main(argv: list[str]) -> int:
         if failed:
             print("::error title=pkg-report missing prerequisites::" + escape("\n".join(failed)))
 
+    probe = Path("artifacts/external/pkgtool-probe.out")
+    if probe.is_file():
+        tail = probe.read_text(errors="replace").strip().splitlines()[:40]
+        if tail:
+            print("::notice title=pkgtool-probe::" + escape("\n".join(tail)))
+
     # Raw tool stderr (dotnet / PkgTool.Core) is the only place runtime errors appear.
     for extra in ("artifacts/external/pkg-build.stderr",):
         path = Path(extra)
