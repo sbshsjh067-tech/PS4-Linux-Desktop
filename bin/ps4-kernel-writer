@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""CLI for Kernel Matrix Selection, Boot-File Staging & VRAM Policy (T-002, T-003)."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from ps4_linux.boot_writer import (  # noqa: E402
+    select_kernel_for_southbridge,
+    stage_boot_files,
+    validate_vram_mb,
+    write_vram_file,
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="PS4 Kernel Matrix Selector & Safe Boot-File Writer")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p_mat = sub.add_parser("matrix", help="Print pinned kernel candidate for a PS4 southbridge")
+    p_mat.add_argument("--southbridge", choices=["aeolia", "belize", "baikal"], required=True)
+    p_mat.add_argument("--fallback", action="store_true", help="Select 6.15.4 fallback instead of 7.0-Clean")
+
+    p_vram = sub.add_parser("vram", help="Validate & write vram.txt in MiB (T-003)")
+    p_vram.add_argument("--mb", required=True, help="VRAM carve-out in MiB (e.g. 1024)")
+    p_vram.add_argument("--dest-dir", type=Path, required=True)
+
+    p_stage = sub.add_parser("stage", help="Validate & stage bzImage, initramfs.cpio.gz, bootargs.txt, vram.txt")
+    p_stage.add_argument("--layout", choices=["usb_fat32", "internal_ftp"], required=True)
+    p_stage.add_argument("--southbridge", choices=["aeolia", "belize", "baikal"], required=True)
+    p_stage.add_argument("--bzimage", type=Path, required=True)
+    p_stage.add_argument("--initramfs", type=Path, required=True)
+    p_stage.add_argument("--dest-dir", type=Path, required=True)
+    p_stage.add_argument("--other-layout-dir", type=Path, default=None)
+    p_stage.add_argument("--vram-mb", type=int, default=1024)
+    p_stage.add_argument("--verified-hdmi-mode", default=None)
+    p_stage.add_argument("--root-label", default="PS4KD")
+
+    args = ap.parse_args(argv)
+    if args.cmd == "matrix":
+        cand = select_kernel_for_southbridge(args.southbridge, prefer_fallback=args.fallback)
+        print(
+            json.dumps(
+                {
+                    "key": cand.key,
+                    "repo": cand.repo,
+                    "branch": cand.branch,
+                    "commit": cand.commit,
+                    "version": cand.version,
+                    "southbridges": list(cand.southbridges),
+                    "fan_driver": cand.fan_driver,
+                    "mesa_lock": cand.mesa_lock,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.cmd == "vram":
+        ok, _, msg = validate_vram_mb(args.mb)
+        if not ok:
+            print(f"ERROR: {msg}", file=sys.stderr)
+            return 1
+        out = write_vram_file(args.dest_dir, vram_mb=int(args.mb))
+        print(f"OK: {msg} -> {out}")
+        return 0
+
+    if args.cmd == "stage":
+        manifest = stage_boot_files(
+            layout=args.layout,
+            southbridge=args.southbridge,
+            bzimage_src=args.bzimage,
+            initramfs_src=args.initramfs,
+            dest_dir=args.dest_dir,
+            other_layout_dir=args.other_layout_dir,
+            vram_mb=args.vram_mb,
+            verified_hdmi_mode=args.verified_hdmi_mode,
+            root_label=args.root_label,
+        )
+        print(json.dumps(manifest, indent=2))
+        return 0
+
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

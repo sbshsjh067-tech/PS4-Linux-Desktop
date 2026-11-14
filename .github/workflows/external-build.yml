@@ -1,0 +1,162 @@
+name: External Build (kernel + linux.img + fPKG + upload)
+
+# Full unrestricted build of the PS4 Linux Desktop release:
+#   kernel bzImage -> kexec loader -> OpenOrbis eboot/PRX -> Debian linux.img
+#   -> real \x7fCNT fPKG via PkgTool.Core -> structure verification -> tmpfiles.org
+#
+# Everything is pinned to audited commits (see scripts/build-external-release.sh).
+# No Sony SDK / proprietary module / retail key is involved anywhere.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_kernel:
+        description: "Reuse the prebuilt bzImage artifact instead of compiling the kernel"
+        type: boolean
+        default: false
+      upload:
+        description: "Upload the finished .pkg to https://tmpfiles.org/"
+        type: boolean
+        default: true
+      rootfs_profile:
+        description: "Debian rootfs profile"
+        type: choice
+        options: [minimal, xorg, kde]
+        default: xorg
+      rootfs_size:
+        description: "linux.img ext4 size"
+        type: string
+        default: "6G"
+  push:
+    branches: ["arena/**"]
+    paths:
+      - "scripts/build-external-release.sh"
+      - "scripts/build-kernel-safe.sh"
+      - "orbis-launcher/**"
+      - "Dockerfile"
+      - ".github/workflows/external-build.yml"
+      - "src/ps4_linux/pkg_builder.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Repository unit tests (TEST A..N)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Jaguar-safe initramfs guard
+        run: make build-initramfs-guard
+
+      - name: Verify Mesa patch digests
+        run: make verify-patches
+
+      - name: Lint shell + Python
+        run: make lint
+
+      - name: Run unit test suite
+        run: python3 -m unittest discover -s tests -v
+
+  external-build:
+    name: Build kernel + linux.img + fPKG (ubuntu-24.04)
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner resources
+        run: |
+          nproc
+          free -h
+          df -h /
+          uname -a
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates \
+            clang lld llvm bc flex bison libssl-dev libelf-dev libncurses-dev \
+            dwarves zstd xz-utils cpio kmod rsync python3 \
+            e2fsprogs debootstrap util-linux file binutils openssl
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dotnet-sdk-8.0 \
+            || echo "dotnet-sdk-8.0 unavailable (only needed for the LibOrbisPkg fallback)"
+
+      - name: Run external release pipeline
+        env:
+          # Optional: pin the toolchain release asset digest (empty = record only)
+          OO_TOOLCHAIN_SHA256: ""
+        run: |
+          set -o pipefail
+          ARGS=(--install-deps
+                --rootfs-profile "${{ github.event.inputs.rootfs_profile || 'xorg' }}"
+                --rootfs-size "${{ github.event.inputs.rootfs_size || '6G' }}")
+          if [[ "${{ github.event.inputs.skip_kernel }}" == "true" ]]; then
+            echo "skip_kernel requested but no prebuilt bzImage is shipped in this repo; building anyway"
+          fi
+          if [[ "${{ github.event.inputs.upload }}" == "false" ]]; then
+            ARGS+=(--no-upload)
+          fi
+          sudo -E ./scripts/build-external-release.sh "${ARGS[@]}"
+
+      - name: Publish summary (URL + digests)
+        if: always()
+        run: |
+          {
+            echo "## PS4 Linux Desktop — external build"
+            echo
+            if [[ -f artifacts/external/BUILD-LOG.md ]]; then
+              sed -n '1,40p' artifacts/external/BUILD-LOG.md
+            else
+              echo "BUILD-LOG.md was not produced — the pipeline stopped before the report step."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps4-linux-desktop-external-reports
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            artifacts/external/build.log
+            artifacts/external/BUILD-LOG.md
+            artifacts/external/SHA256SUMS
+            artifacts/external/pkg-report.json
+            artifacts/external/pkg-inspection.json
+            artifacts/external/pkg-upload.json
+            artifacts/external/pkg-extract.log
+
+      - name: Upload kernel + loader + launcher artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps4-linux-desktop-boot-assets
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            artifacts/external/kernel/bzImage
+            artifacts/external/kernel/kernel.config
+            artifacts/external/kexec.bin
+            artifacts/external/orbis/eboot.bin
+            artifacts/external/orbis/libc.prx
+            artifacts/external/orbis/libSceFios2.prx
+            artifacts/external/orbis/right.sprx
+
+      - name: Upload the finished fPKG
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps4-linux-desktop-fpkg
+          if-no-files-found: warn
+          retention-days: 14
+          path: artifacts/external/pkg/*.pkg

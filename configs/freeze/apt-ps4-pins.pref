@@ -1,0 +1,9 @@
+# PS4 Linux Desktop — Package Version Freeze Policy (Ticket T-007, Decision D-04)
+# Prevents apt/dpkg upgrades from overwriting / shadowing pinned graphics & D3D components.
+Package: dxvk* vkd3d*
+Pin: version 2.7.*
+Pin-Priority: 1001
+
+Package: vkd3d-proton*
+Pin: release *
+Pin-Priority: -1

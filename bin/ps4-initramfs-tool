@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Pure-Python SVR4 CPIO/Initramfs Packer, Inspector & Extractor (`lsinitramfs`/`mkinitramfs` replacement)."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from ps4_linux.binary_inspect import (  # noqa: E402
+    CpioEntry,
+    build_cpio_newc,
+    inspect_initramfs,
+    list_cpio_entries,
+    sha256_file,
+)
+
+
+def pack_dir_to_initramfs(src_dir: Path, out_file: Path, compress: str = "gzip") -> dict[str, object]:
+    entries: list[CpioEntry] = []
+    for root, dirs, files in os.walk(src_dir):
+        dirs.sort()
+        files.sort()
+        rel_root = Path(root).relative_to(src_dir).as_posix()
+        if rel_root != ".":
+            st_d = Path(root).stat()
+            entries.append(CpioEntry(name=rel_root, mode=0o040000 | (st_d.st_mode & 0o777), size=0))
+        for fname in files:
+            fpath = Path(root) / fname
+            rel_f = fpath.relative_to(src_dir).as_posix()
+            st_f = fpath.stat()
+            data = fpath.read_bytes()
+            entries.append(
+                CpioEntry(
+                    name=rel_f,
+                    mode=0o100000 | (st_f.st_mode & 0o777),
+                    size=len(data),
+                    data=data,
+                )
+            )
+    blob = build_cpio_newc(entries, compress=compress)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_bytes(blob)
+    audit = inspect_initramfs(out_file)
+    return audit.to_dict()
+
+
+def extract_initramfs_to_dir(archive: Path, dest_dir: Path) -> int:
+    entries, _ = list_cpio_entries(archive.read_bytes(), load_data=True)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for ent in entries:
+        clean_rel = Path(ent.name.lstrip("/"))
+        if ".." in clean_rel.parts:
+            raise ValueError(f"Unsafe path in CPIO archive: {ent.name}")
+        target = dest_dir / clean_rel
+        if ent.is_dir:
+            target.mkdir(parents=True, exist_ok=True)
+        elif ent.is_file:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(ent.data)
+            os.chmod(target, ent.mode & 0o777)
+            count += 1
+    return count
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="PS4 Initramfs Packer, Extractor & GPU Firmware Auditor")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p_ls = sub.add_parser("ls", help="List entries in initramfs archive (lsinitramfs equivalent)")
+    p_ls.add_argument("archive", type=Path)
+
+    p_aud = sub.add_parser("audit", help="Audit initramfs for /init, HDMI guard & GPU firmware conflicts")
+    p_aud.add_argument("archive", type=Path)
+
+    p_pack = sub.add_parser("pack", help="Build newc CPIO initramfs.cpio.gz from a directory")
+    p_pack.add_argument("src_dir", type=Path)
+    p_pack.add_argument("out_archive", type=Path)
+    p_pack.add_argument("--compress", choices=["gzip", "xz", "none"], default="gzip")
+
+    p_ext = sub.add_parser("extract", help="Extract initramfs archive to destination directory")
+    p_ext.add_argument("archive", type=Path)
+    p_ext.add_argument("dest_dir", type=Path)
+
+    args = ap.parse_args(argv)
+    if args.cmd == "ls":
+        entries, comp = list_cpio_entries(args.archive.read_bytes(), load_data=False)
+        print(f"# compression={comp} sha256={sha256_file(args.archive)} entries={len(entries)}")
+        for e in entries:
+            kind = "d" if e.is_dir else "-"
+            print(f"{kind}{e.mode & 0o777:03o} {e.size:10d}  {e.name}")
+        return 0
+
+    if args.cmd == "audit":
+        res = inspect_initramfs(args.archive)
+        print(json.dumps(res.to_dict(), indent=2))
+        return 0 if res.valid else 1
+
+    if args.cmd == "pack":
+        comp = "uncompressed" if args.compress == "none" else args.compress
+        report = pack_dir_to_initramfs(args.src_dir, args.out_archive, compress=comp)
+        print(json.dumps(report, indent=2))
+        return 0 if report["valid"] else 1
+
+    if args.cmd == "extract":
+        n = extract_initramfs_to_dir(args.archive, args.dest_dir)
+        print(f"Extracted {n} regular files to {args.dest_dir}")
+        return 0
+
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

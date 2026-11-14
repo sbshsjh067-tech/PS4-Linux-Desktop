@@ -1,0 +1,9 @@
+# PS4 Linux Desktop — Systemd Sleep Mask Preset (SYS-001: PS4 has no S3/ACPI suspend)
+disable sleep.target
+disable suspend.target
+disable hibernate.target
+disable hybrid-sleep.target
+disable suspend-then-hibernate.target
+enable systemd-timesyncd.service
+enable ps4-hdmi-protector.service
+enable ps4-thermal-guard.service

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
+# ps4-mesa-select — Safe PS4 Mesa Selector & Anti-Black-Screen X11 Guard (T-006, BOOT-006)
+#
+# Prevents Display Manager (SDDM / LightDM) black screens caused by enabling Xorg
+# `AccelMethod "glamor"` when `/opt/ps4-mesa` is absent or lacks Liverpool/Gladius IDs!
+#
+# Modes:
+#   ps4-mesa-select --enable     Activate /opt/ps4-mesa + glamor + DRI3 + RADV ICD
+#   ps4-mesa-select --undo       Revert to distro Mesa + safe ShadowFB Xorg config
+#   ps4-mesa-select --auto-safe  Enable /opt/ps4-mesa if verified, else enforce ShadowFB
+#   ps4-mesa-select --status     Inspect current Mesa & Xorg configuration
+
+set -euo pipefail
+
+MESA_PREFIX="${PS4_MESA_PREFIX:-/opt/ps4-mesa}"
+ETC_ROOT="${PS4_ETC_ROOT:-/etc}"
+LD_CONF="${ETC_ROOT}/ld.so.conf.d/00-ps4-mesa.conf"
+ENV_FILE="${ETC_ROOT}/environment"
+XORG_CONF="${ETC_ROOT}/X11/xorg.conf.d/20-ps4-gpu.conf"
+ICD_JSON="${MESA_PREFIX}/share/vulkan/icd.d/radeon_icd.x86_64.json"
+
+verify_ps4_mesa_symbols() {
+    local found=0
+    shopt -s nullglob
+    for so in "${MESA_PREFIX}/lib"/libgallium*.so*; do
+        if grep -q -a -i -E "liverpool|gladius" "$so" 2>/dev/null; then
+            found=1
+            break
+        fi
+    done
+    shopt -u nullglob
+    [[ "$found" == "1" ]]
+}
+
+write_xorg_glamor() {
+    mkdir -p "$(dirname "$XORG_CONF")"
+    cat > "$XORG_CONF" <<'EOF'
+# PS4 Liverpool/Gladius GPU — Hardware Accelerated Mode (/opt/ps4-mesa active)
+# Revert safely: sudo ps4-mesa-select --undo
+Section "Device"
+    Identifier "PS4 GPU"
+    Driver     "modesetting"
+    Option     "AccelMethod" "glamor"
+    Option     "DRI"         "3"
+EndSection
+EOF
+}
+
+write_xorg_shadowfb() {
+    mkdir -p "$(dirname "$XORG_CONF")"
+    cat > "$XORG_CONF" <<'EOF'
+# PS4 Liverpool/Gladius GPU — Safe Fallback ShadowFB Mode
+# Prevents glamor black-screen crash when PS4-patched Mesa is not active.
+Section "Device"
+    Identifier "PS4 GPU"
+    Driver     "modesetting"
+    Option     "AccelMethod" "none"
+    Option     "ShadowFB"    "true"
+EndSection
+EOF
+}
+
+ACTION="${1:---status}"
+
+case "$ACTION" in
+    --status)
+        if verify_ps4_mesa_symbols; then
+            echo "PS4_MESA_BUNDLE=VERIFIED (${MESA_PREFIX})"
+        else
+            echo "PS4_MESA_BUNDLE=MISSING_OR_UNPATCHED (${MESA_PREFIX})"
+        fi
+        if [[ -f "$LD_CONF" ]]; then
+            echo "LD_SO_CONF=ACTIVE ($(cat "$LD_CONF"))"
+        else
+            echo "LD_SO_CONF=INACTIVE"
+        fi
+        if [[ -f "$XORG_CONF" ]]; then
+            accel="$(grep -i 'AccelMethod' "$XORG_CONF" | awk '{print $3}' | tr -d '"' || true)"
+            echo "XORG_ACCEL=${accel:-default}"
+        else
+            echo "XORG_ACCEL=UNCONFIGURED"
+        fi
+        ;;
+
+    --enable)
+        if ! verify_ps4_mesa_symbols; then
+            echo "ERROR: ${MESA_PREFIX} is missing or lacks Liverpool/Gladius PCI IDs! Refusing to enable glamor." >&2
+            exit 1
+        fi
+        mkdir -p "$(dirname "$LD_CONF")"
+        echo "${MESA_PREFIX}/lib" > "$LD_CONF"
+        mkdir -p "$(dirname "$ENV_FILE")"
+        touch "$ENV_FILE"
+        sed -i '/^VK_DRIVER_FILES=/d' "$ENV_FILE"
+        echo "VK_DRIVER_FILES=${ICD_JSON}" >> "$ENV_FILE"
+        write_xorg_glamor
+        [[ "$ETC_ROOT" == "/etc" ]] && command -v ldconfig >/dev/null 2>&1 && ldconfig || true
+        echo "Enabled PS4 Mesa (${MESA_PREFIX}) with glamor + DRI3 + RADV."
+        ;;
+
+    --undo)
+        rm -f "$LD_CONF"
+        if [[ -f "$ENV_FILE" ]]; then
+            sed -i '\|^VK_DRIVER_FILES=.*/ps4-mesa/|d' "$ENV_FILE"
+        fi
+        write_xorg_shadowfb
+        [[ "$ETC_ROOT" == "/etc" ]] && command -v ldconfig >/dev/null 2>&1 && ldconfig || true
+        echo "Reverted to safe ShadowFB mode; PS4 Mesa disabled."
+        ;;
+
+    --auto-safe)
+        if verify_ps4_mesa_symbols; then
+            "$0" --enable
+        else
+            echo "WARN: PS4 Mesa not verified at ${MESA_PREFIX}; enforcing safe ShadowFB Xorg fallback to prevent Black Screen."
+            "$0" --undo
+        fi
+        ;;
+
+    *)
+        echo "Usage: $0 [--status | --enable | --undo | --auto-safe]" >&2
+        exit 1
+        ;;
+esac

@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""CLI for `ps4-doctor` Diagnostic & Black-Screen Post-Mortem Engine (PART 2 §7 & T-005)."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from ps4_linux.doctor import analyze_black_screen_logs, run_doctor  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="PS4 Linux Diagnostic Engine & Black-Screen Fault Isolator")
+    ap.add_argument("--sysfs-root", type=Path, default=Path("/sys"))
+    ap.add_argument("--mesa-prefix", type=Path, default=Path("/opt/ps4-mesa"))
+    ap.add_argument("--usb-boot-dir", type=Path, default=None)
+    ap.add_argument("--rootfs-img", type=Path, default=None)
+    ap.add_argument("--firmware", default="13.52")
+    ap.add_argument("--goldhen", default="2.4b18.12")
+    ap.add_argument("--dxvk-version", default=None)
+    ap.add_argument("--proton-version", default=None)
+    ap.add_argument("--analyze-blackscreen", type=Path, default=None, help="Analyze captured boot/dmesg log file")
+    ap.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    args = ap.parse_args(argv)
+
+    if args.analyze_blackscreen is not None:
+        raw_log = args.analyze_blackscreen.read_text(encoding="utf-8", errors="ignore")
+        bs = analyze_black_screen_logs(raw_log)
+        if args.json:
+            print(json.dumps(bs.to_dict(), indent=2))
+        else:
+            print("=== PS4 BLACK-SCREEN POST-MORTEM ANALYSIS ===")
+            print(f"Black Screen Fault    : {bs.black_screen_detected}")
+            print(f"Last Successful Stage : {bs.last_successful_stage}")
+            print(f"First Failed Stage    : {bs.first_failed_stage}")
+            print(f"Registry Issue IDs    : {', '.join(bs.registry_ids) or 'NONE'}")
+            for ev in bs.evidence_lines:
+                print(f"  Evidence: {ev}")
+            print(f"Recommended Fix       : {bs.recommended_fix}")
+        return 1 if bs.black_screen_detected else 0
+
+    rep = run_doctor(
+        sysfs_root=args.sysfs_root,
+        mesa_prefix=args.mesa_prefix,
+        usb_boot_dir=args.usb_boot_dir,
+        rootfs_img_path=args.rootfs_img,
+        firmware_version=args.firmware,
+        goldhen_version=args.goldhen,
+        dxvk_version=args.dxvk_version,
+        proton_version=args.proton_version,
+    )
+
+    if args.json:
+        print(json.dumps(rep.to_dict(), indent=2))
+    else:
+        print(f"=== PS4 DOCTOR DIAGNOSTIC REPORT ({rep.timestamp}) ===")
+        print(
+            f"Kernel={rep.summary_telemetry['kernel_version']} | "
+            f"FW={rep.summary_telemetry['ps4_firmware_version']} | "
+            f"GoldHEN={rep.summary_telemetry['goldhen_version']} | "
+            f"GPU={rep.summary_telemetry['gpu_pci_id']}"
+        )
+        print("-" * 78)
+        print(f"{'STATUS':<7} {'BLOCKER':<8} {'ISSUE':<9} {'DOMAIN':<22} MESSAGE")
+        print("-" * 78)
+        for c in rep.checks:
+            blk = "YES" if c.blocker else "no"
+            reg = c.registry_id or "-"
+            print(f"{c.status:<7} {blk:<8} {reg:<9} {c.domain:<22} {c.message}")
+            if c.status != "PASS" and c.remediation:
+                print(f"        FIX -> {c.remediation}")
+        print("-" * 78)
+        print(f"EXIT CODE: {rep.exit_code}")
+
+    return rep.exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

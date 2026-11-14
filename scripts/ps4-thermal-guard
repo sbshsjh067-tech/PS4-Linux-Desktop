@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""ps4-thermal-guard — Safe PS4 Fan & Thermal Threshold Controller (Ticket T-012, SYS-002).
+
+Safety Policy (verified from feeRnt/ps4-linux-12xx drivers/ps4/ps4-fan.c):
+  - On kernel 7.0-Clean (`ps4-fan` hwmon driver), reads `temp1_input` (RO, mC),
+    `fan1_input` (RO, RPM), and writes `temp1_crit` (RW, 45000..85000 mC).
+  - Enforces hard project safety floor of 65C (prevents permanent max-RPM "jet engine"
+    lockup, S23) and ceiling of 80C (default target: 72C).
+  - NEVER performs legacy 6-byte->52-byte raw ICC stack-corrupting writes that zero
+    EMC bytes [9]=0x08 and [12]=0x80!
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from ps4_linux import THERMAL_DEFAULT_TARGET_C, THERMAL_FLOOR_C, THERMAL_MAX_SAFE_C  # noqa: E402
+
+
+def find_ps4_hwmon(sysfs_root: Path = Path("/sys")) -> Path | None:
+    hwmon_base = sysfs_root / "class/hwmon"
+    if not hwmon_base.is_dir():
+        return None
+    for hw in sorted(hwmon_base.glob("hwmon*")):
+        name_file = hw / "name"
+        if name_file.is_file():
+            name = name_file.read_text(encoding="utf-8", errors="ignore").strip().lower()
+            if "ps4" in name or (hw / "temp1_crit").is_file():
+                return hw
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="PS4 Safe Fan & Thermal Guard (T-012)")
+    ap.add_argument("--sysfs-root", type=Path, default=Path("/sys"))
+    ap.add_argument("--target-c", type=int, default=THERMAL_DEFAULT_TARGET_C, help="Target fan threshold in C (65..80, default 72)")
+    ap.add_argument("--apply", action="store_true", help="Write clamped target to hwmon temp1_crit")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+
+    if args.target_c < THERMAL_FLOOR_C or args.target_c > THERMAL_MAX_SAFE_C:
+        print(
+            f"ERROR: Requested threshold {args.target_c}C outside safe band [{THERMAL_FLOOR_C}C..{THERMAL_MAX_SAFE_C}C] (SYS-002)!",
+            file=sys.stderr,
+        )
+        return 1
+
+    hw = find_ps4_hwmon(args.sysfs_root)
+    if hw is None:
+        payload = {
+            "hwmon_found": False,
+            "status": "WARN",
+            "issue_id": "SYS-002",
+            "message": "No ps4-fan hwmon node found; boot primary 7.0-Clean kernel for safe hwmon fan control.",
+        }
+        print(json.dumps(payload, indent=2) if args.json else payload["message"])
+        return 0
+
+    temp_mc = int((hw / "temp1_input").read_text(encoding="utf-8").strip()) if (hw / "temp1_input").is_file() else 0
+    fan_rpm = int((hw / "fan1_input").read_text(encoding="utf-8").strip()) if (hw / "fan1_input").is_file() else 0
+    crit_file = hw / "temp1_crit"
+    applied = False
+    if args.apply and crit_file.is_file():
+        crit_file.write_text(f"{args.target_c * 1000}\n", encoding="utf-8")
+        applied = True
+    crit_mc = int(crit_file.read_text(encoding="utf-8").strip()) if crit_file.is_file() else 0
+
+    payload = {
+        "hwmon_found": True,
+        "hwmon_path": str(hw),
+        "temp_c": round(temp_mc / 1000.0, 1),
+        "fan_rpm": fan_rpm,
+        "threshold_c": round(crit_mc / 1000.0, 1),
+        "applied": applied,
+    }
+    print(json.dumps(payload, indent=2) if args.json else f"APU={payload['temp_c']}C Fan={fan_rpm}RPM Threshold={payload['threshold_c']}C")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

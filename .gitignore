@@ -1,0 +1,12 @@
+# Scratch / build workspaces & large binary outputs (keep repo lightweight)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.kernel-work/
+.external-work/
+.mesa-work/
+artifacts/
+*.bak
+*.img
+*.tar.xz
+!patches/mesa/*.patch

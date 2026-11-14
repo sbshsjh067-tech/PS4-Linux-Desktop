@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""GoldHEN Payload Verification & One-Command TCP Delivery Helper (Ticket T-014).
+
+Legal & Safety Compliance (research/11-risks-legal.md §5):
+  - Does NOT contain or distribute any exploit code, GoldHEN binary, or Sony code.
+  - Verifies the user-supplied Linux loader payload (ELF64 x86_64 or .bin) structure
+    and SHA-256 before streaming it over TCP to GoldHEN BinLoader (:9020 / :9090).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import socket
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from ps4_linux.binary_inspect import inspect_payload  # noqa: E402
+
+
+def send_payload_tcp(host: str, port: int, payload_path: Path, timeout: float = 10.0) -> int:
+    data = payload_path.read_bytes()
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.sendall(data)
+    return len(data)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Verify & Send PS4 Linux Payload to GoldHEN BinLoader")
+    ap.add_argument("--payload", type=Path, required=True, help="Path to user-supplied linux-1024mb.elf / .bin")
+    ap.add_argument("--ps4-ip", type=str, default="", help="PS4 LAN IP address (omit for --verify-only)")
+    ap.add_argument("--port", type=int, default=9020, help="GoldHEN BinLoader TCP port (9020 or 9090)")
+    ap.add_argument("--verify-only", action="store_true", help="Only validate payload binary structure & SHA-256")
+    ap.add_argument("--timeout", type=float, default=10.0)
+    args = ap.parse_args(argv)
+
+    info = inspect_payload(args.payload)
+    print(json.dumps(info.to_dict(), indent=2))
+    if not info.valid:
+        print("ERROR: Refusing to send invalid/corrupt payload!", file=sys.stderr)
+        return 1
+
+    if args.verify_only or not args.ps4_ip:
+        return 0
+
+    sent = send_payload_tcp(args.ps4_ip, args.port, args.payload, timeout=args.timeout)
+    print(f"Sent {sent} bytes ({args.payload.name}) to PS4 {args.ps4_ip}:{args.port}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

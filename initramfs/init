@@ -1,0 +1,155 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# PS4 Linux Desktop — Safe Boot Initramfs (/init)
+#
+# Executes BOOT STAGES 5..8 inside early userspace:
+#   BOOT STAGE 5 — Initramfs Loading & Virtual FS Mount
+#   BOOT STAGE 6 — GPU Initialization Check (Liverpool / Gladius DRM nodes)
+#   BOOT STAGE 7 — HDMI Initialization & Early MN864729 Bridge Guard
+#   BOOT STAGE 8 — USB-Only RootFS Mounting (LABEL=PS4KD or USB linux.img) + switch_root
+#
+# Safety Policy (Decision D-01):
+#   NEVER formats, partitions, or mounts PS4 internal disk (/dev/sda Orbis partitions)
+#   for Linux OS writes. Automatically persists diagnostic logs to LABEL=PS4BOOT (FAT32)
+#   if any stage fails so Black Screen faults can be analyzed offline with `ps4-doctor`.
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+[ -x /bin/busybox ] && /bin/busybox --install -s /bin 2>/dev/null || true
+
+mkdir -p /dev /proc /sys /run /newroot /usbhost /bootfs
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+
+klog() {
+    echo "ps4-safe-boot: $*"
+    [ -w /dev/kmsg ] && echo "ps4-safe-boot: $*" > /dev/kmsg 2>/dev/null || true
+}
+
+persist_boot_log() {
+    reason="$1"
+    boot_part="$(blkid -L PS4BOOT 2>/dev/null || findfs LABEL=PS4BOOT 2>/dev/null || true)"
+    [ -n "$boot_part" ] || return 0
+    if mount -t vfat "$boot_part" /bootfs 2>/dev/null; then
+        {
+            echo "=== PS4 SAFE BOOT INITRAMFS DIAGNOSTIC LOG ==="
+            echo "reason=$reason"
+            echo "uptime_s=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)"
+            echo "cmdline=$(cat /proc/cmdline 2>/dev/null)"
+            uname -a 2>/dev/null || true
+            echo "=== DRM SYSFS ==="
+            ls -la /sys/class/drm 2>&1 || true
+            for st in /sys/class/drm/card*-HDMI-*/status /sys/class/drm/card*-HDMI-*/modes; do
+                [ -e "$st" ] && { echo "--- $st ---"; cat "$st"; }
+            done
+            echo "=== DMESG ==="
+            dmesg 2>&1 || true
+        } > "/bootfs/ps4-safe-boot-last.log" 2>&1
+        sync
+        umount /bootfs 2>/dev/null || true
+    fi
+}
+
+drop_to_rescue() {
+    fail_stage="$1"
+    fail_msg="$2"
+    klog "[FAIL] $fail_stage: $fail_msg"
+    persist_boot_log "FAILED at $fail_stage: $fail_msg"
+    klog "Dropping to emergency rescue shell (Orbis internal disk untouched)."
+    setsid cttyhack /bin/sh 2>/dev/null || exec /bin/sh
+}
+
+klog "[PASS] BOOT STAGE 5 — Initramfs Loading: virtual filesystems mounted."
+
+# Parse kernel command line
+ROOT_SPEC="LABEL=PS4KD"
+ROOT_WAIT=30
+LINUX_IMG_NAME="linux.img"
+RESCUE_MODE=0
+
+for arg in $(cat /proc/cmdline 2>/dev/null); do
+    case "$arg" in
+        ps4_root=*)      ROOT_SPEC="${arg#ps4_root=}" ;;
+        root=*)          ROOT_SPEC="${arg#root=}" ;;
+        ps4_rootwait=*)  ROOT_WAIT="${arg#ps4_rootwait=}" ;;
+        ps4_img=*)       LINUX_IMG_NAME="${arg#ps4_img=}" ;;
+        ps4_rescue)      RESCUE_MODE=1 ;;
+    esac
+done
+
+# BOOT STAGE 6 — GPU Initialization Check
+if [ -d /sys/class/drm/card0 ]; then
+    klog "[PASS] BOOT STAGE 6 — GPU Initialization: /sys/class/drm/card0 active."
+else
+    klog "[WARN] BOOT STAGE 6 — GPU Initialization: /sys/class/drm/card0 not yet registered."
+fi
+
+# BOOT STAGE 7 — HDMI Initialization & Early MN864729 Bridge Unmuter
+if [ -x /bin/ps4_hdmi_guard ]; then
+    /bin/ps4_hdmi_guard &
+    klog "[PASS] BOOT STAGE 7 — HDMI Initialization: ps4_hdmi_guard daemon started."
+elif [ -x /bin/ps4hdmi ]; then
+    /bin/ps4hdmi &
+    klog "[PASS] BOOT STAGE 7 — HDMI Initialization: ps4hdmi daemon started."
+else
+    klog "[WARN] BOOT STAGE 7 — HDMI Initialization: no early bridge guard binary in initramfs."
+fi
+
+[ "$RESCUE_MODE" = "1" ] && drop_to_rescue "USER_REQUEST" "ps4_rescue requested on kernel cmdline"
+
+# BOOT STAGE 8 — RootFS Discovery & Safe USB Mounting
+klog "Waiting up to ${ROOT_WAIT}s for USB RootFS (${ROOT_SPEC} or USB ${LINUX_IMG_NAME})..."
+elapsed=0
+ROOT_DEV=""
+while [ "$elapsed" -lt "$ROOT_WAIT" ]; do
+    case "$ROOT_SPEC" in
+        LABEL=*)
+            lbl="${ROOT_SPEC#LABEL=}"
+            ROOT_DEV="$(blkid -L "$lbl" 2>/dev/null || findfs "LABEL=$lbl" 2>/dev/null || true)"
+            ;;
+        UUID=*)
+            uu="${ROOT_SPEC#UUID=}"
+            ROOT_DEV="$(blkid -U "$uu" 2>/dev/null || findfs "UUID=$uu" 2>/dev/null || true)"
+            ;;
+        /dev/*)
+            [ -b "$ROOT_SPEC" ] && ROOT_DEV="$ROOT_SPEC"
+            ;;
+    esac
+    [ -n "$ROOT_DEV" ] && break
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+
+MOUNTED_OK=0
+if [ -n "$ROOT_DEV" ] && [ -b "$ROOT_DEV" ]; then
+    # Run non-destructive filesystem check before mounting
+    [ -x /bin/e2fsck ] && /bin/e2fsck -p "$ROOT_DEV" >/dev/null 2>&1 || true
+    if mount -t ext4 -o rw,noatime,commit=30,errors=remount-ro "$ROOT_DEV" /newroot 2>/dev/null; then
+        # Support USB partition holding a loop-mounted linux.img file OR direct RootFS
+        if [ ! -x /newroot/sbin/init ] && [ ! -L /newroot/sbin/init ] && [ -f "/newroot/$LINUX_IMG_NAME" ]; then
+            mkdir -p /usbhost
+            mount --move /newroot /usbhost
+            [ -x /bin/e2fsck ] && /bin/e2fsck -p "/usbhost/$LINUX_IMG_NAME" >/dev/null 2>&1 || true
+            if mount -t ext4 -o loop,rw,noatime,commit=30,errors=remount-ro "/usbhost/$LINUX_IMG_NAME" /newroot 2>/dev/null; then
+                MOUNTED_OK=1
+                klog "[PASS] BOOT STAGE 8 — RootFS Mounting: loop-mounted /usbhost/$LINUX_IMG_NAME"
+            fi
+        else
+            MOUNTED_OK=1
+            klog "[PASS] BOOT STAGE 8 — RootFS Mounting: mounted $ROOT_DEV on /newroot"
+        fi
+    fi
+fi
+
+if [ "$MOUNTED_OK" != "1" ]; then
+    drop_to_rescue "BOOT STAGE 8 — RootFS Mounting" "mounting $ROOT_SPEC failed after ${ROOT_WAIT}s (BOOT-002)"
+fi
+
+persist_boot_log "BOOT STAGE 8 PASSED — handing off to RootFS /sbin/init"
+
+# Stop initramfs background bridge guard cleanly; systemd ps4-hdmi-protector.service takes over
+killall ps4_hdmi_guard ps4hdmi 2>/dev/null || true
+
+exec switch_root /newroot /sbin/init
+drop_to_rescue "BOOT STAGE 8 — switch_root" "switch_root /newroot /sbin/init failed"

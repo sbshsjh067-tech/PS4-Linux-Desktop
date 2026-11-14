@@ -1,0 +1,11 @@
+[Unit]
+Description=PS4 Safe Thermal Threshold Guard (72C target, 65C floor — SYS-002)
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ps4-thermal-guard --target-c 72 --apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

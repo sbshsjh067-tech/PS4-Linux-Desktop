@@ -1,0 +1,3 @@
+# Disable Baloo file indexing to protect USB flash I/O and Jaguar CPU (Ticket T-008)
+[Basic Settings]
+Indexing-Enabled=false

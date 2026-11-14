@@ -1,0 +1,10 @@
+.git
+.gitignore
+.external-work
+.kernel-work
+.mesa-work
+artifacts
+research
+**/__pycache__
+**/*.pyc
+.pytest_cache

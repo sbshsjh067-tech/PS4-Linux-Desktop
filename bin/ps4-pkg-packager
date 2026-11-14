@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""CLI for staging, verifying, building, and uploading PS4 Homebrew PKG (`\\x7fCNT`) bundles."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from ps4_linux.pkg_builder import (  # noqa: E402
+    inspect_ps4_pkg,
+    parse_param_sfo,
+    stage_and_optionally_build_pkg,
+    upload_pkg_to_tmpfiles,
+)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="ps4-pkg-packager",
+        description="Stage real PS4 PKG metadata/boot assets, enforce anti-fake-PKG prerequisites, verify CNT PKGs, and upload to tmpfiles.org.",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_stage = sub.add_parser("build-or-stage", help="Stage real repository assets and build PKG if all prerequisites exist")
+    p_stage.add_argument(
+        "--pkg-name",
+        default="IV0000-BREW00001_00-PS4LDESKTOP0000.pkg",
+        help="Target PKG filename (default: IV0000-BREW00001_00-PS4LDESKTOP0000.pkg)",
+    )
+    p_stage.add_argument("--staging-dir", type=Path, default=REPO_ROOT / "artifacts" / "pkg-staging")
+    p_stage.add_argument("--output-dir", type=Path, default=REPO_ROOT / "artifacts" / "pkg")
+    p_stage.add_argument("--cuh-model", default="CUH-1215A")
+    p_stage.add_argument("--vram-mb", type=int, default=1024)
+    p_stage.add_argument("--eboot", type=Path, default=None)
+    p_stage.add_argument("--libc-prx", type=Path, default=None)
+    p_stage.add_argument("--libfios-prx", type=Path, default=None)
+    p_stage.add_argument("--right-sprx", type=Path, default=None)
+    p_stage.add_argument("--bzimage", type=Path, default=None)
+    p_stage.add_argument("--payload", type=Path, default=None)
+    p_stage.add_argument("--linux-img", type=Path, default=None)
+    p_stage.add_argument("--pkgtool", default=None)
+    p_stage.add_argument("--json", action="store_true")
+
+    p_insp = sub.add_parser("inspect-pkg", help="Validate binary PS4 CNT (.pkg) header, size, Content ID, and SHA-256")
+    p_insp.add_argument("pkg", type=Path)
+
+    p_sfo = sub.add_parser("inspect-sfo", help="Parse and validate binary Orbis param.sfo")
+    p_sfo.add_argument("sfo", type=Path)
+
+    p_up = sub.add_parser("upload", help="Upload a verified PS4 .pkg to https://tmpfiles.org/")
+    p_up.add_argument("pkg", type=Path)
+
+    args = parser.parse_args()
+
+    if args.cmd == "build-or-stage":
+        out_pkg = args.output_dir / args.pkg_name
+        rep = stage_and_optionally_build_pkg(
+            repo_root=REPO_ROOT,
+            staging_dir=args.staging_dir,
+            requested_pkg_name=args.pkg_name,
+            output_pkg_path=out_pkg,
+            cuh_model=args.cuh_model,
+            vram_mb=args.vram_mb,
+            eboot_path=args.eboot,
+            libc_prx_path=args.libc_prx,
+            libfios_prx_path=args.libfios_prx,
+            right_sprx_path=args.right_sprx,
+            bzimage_path=args.bzimage,
+            payload_path=args.payload,
+            linux_img_path=args.linux_img,
+            pkgtool_bin=args.pkgtool,
+        )
+        if args.json:
+            print(json.dumps(rep.to_dict(), indent=2))
+        else:
+            print(f"Requested PKG Filename : {rep.requested_pkg_filename}")
+            print(f"Normalized CONTENT_ID  : {rep.content_id_info.normalized_content_id}")
+            if rep.content_id_info.was_padded:
+                print(f"Content ID Note        : {rep.content_id_info.note}")
+            print(f"Staging Directory      : {rep.staging_dir}")
+            print("\n=== Built Real Staging Artifacts ===")
+            for f in rep.built_files:
+                print(f"  - {f['path']} ({f['size_bytes']} bytes, sha256={f['sha256']})")
+            print("\n=== PS4 PKG & Linux Prerequisite Audit ===")
+            for p in rep.prerequisites:
+                st = "OK" if (p.present and p.valid) else "MISSING"
+                print(f"  [{st:7s}] {p.name}: {p.detail}")
+            if rep.pkg_built:
+                print(f"\n[SUCCESS] Built verified PS4 PKG: {rep.pkg_path} ({rep.pkg_size_bytes} bytes, sha256={rep.pkg_sha256})")
+                return 0
+            print("\n[BLOCKED — HONESTY GATE] Final .pkg was NOT generated (refusing to emit a fake/incomplete PKG):")
+            for reason in rep.blocking_reasons:
+                print(f"  * {reason}")
+            return 2
+
+    if args.cmd == "inspect-pkg":
+        res = inspect_ps4_pkg(args.pkg)
+        print(json.dumps(res.to_dict(), indent=2))
+        return 0 if res.valid_ps4_pkg else 1
+
+    if args.cmd == "inspect-sfo":
+        parsed = parse_param_sfo(args.sfo.read_bytes())
+        print(json.dumps(parsed, indent=2))
+        return 0
+
+    if args.cmd == "upload":
+        res = upload_pkg_to_tmpfiles(args.pkg)
+        print(json.dumps(res, indent=2))
+        return 0 if res["uploaded"] else 1
+
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
