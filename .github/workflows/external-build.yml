@@ -190,6 +190,7 @@ jobs:
             artifacts/external/pkg-extract.log
             artifacts/external/pkg-build.stderr
             artifacts/external/pkgtool-probe.out
+            artifacts/external/pkg-report-attempt*.json
 
       - name: Upload kernel + loader + launcher artifacts
         if: always()

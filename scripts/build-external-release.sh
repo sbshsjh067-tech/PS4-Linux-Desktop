@@ -691,7 +691,7 @@ liborbispkg_pkgtool() {
             "$src/LibOrbisPkg.Core/LibOrbisPkg.Core.csproj" "$src/PkgTool.Core/PkgTool.Core.csproj" || true
     } >&2
 
-    if ! dotnet build "$src/PkgTool.Core/PkgTool.Core.csproj" -c Release -nologo; then
+    if ! dotnet build "$src/PkgTool.Core/PkgTool.Core.csproj" -c Release -nologo >&2; then
         warn "LibOrbisPkg build failed" >&2
         return 1
     fi
@@ -745,6 +745,22 @@ except Exception:
     print("False"); sys.exit(0)
 print("True" if d.get("pkg_built") else "False")' "$report" 2>/dev/null || echo False)"
     printf '%s' "$PKG_BUILT_RESULT" > "$ART_DIR/.pkg-built"
+
+    PKG_ATTEMPT=$(( ${PKG_ATTEMPT:-0} + 1 ))
+    cp "$report" "$ART_DIR/pkg-report-attempt${PKG_ATTEMPT}.json" 2>/dev/null || true
+    if [[ "$PKG_BUILT_RESULT" != "True" ]]; then
+        log "packaging attempt ${PKG_ATTEMPT} was refused; blocking reasons:"
+        python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("  * report unreadable"); sys.exit(0)
+for r in d.get("blocking_reasons", []):
+    print("  *", r)
+for p in d.get("prerequisites", []):
+    if not (p.get("present") and p.get("valid")):
+        print(f"  * prerequisite {p.get("name")}: {p.get("detail")}")' "$report" 2>/dev/null || true
+    fi
 }
 
 build_pkg_step() {
