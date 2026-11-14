@@ -4,16 +4,16 @@ name: External Build (kernel + linux.img + fPKG + upload)
 #   kernel bzImage -> kexec loader -> OpenOrbis eboot/PRX -> Debian linux.img
 #   -> real \x7fCNT fPKG via PkgTool.Core -> structure verification -> tmpfiles.org
 #
+# Every stage runs as its own workflow step, so a failure names the exact stage
+# (toolchain / payload / kernel / orbis / rootfs / pkg / verify / upload) and the
+# error tail is published as a check-run annotation.
+#
 # Everything is pinned to audited commits (see scripts/build-external-release.sh).
 # No Sony SDK / proprietary module / retail key is involved anywhere.
 
 on:
   workflow_dispatch:
     inputs:
-      skip_kernel:
-        description: "Reuse the prebuilt bzImage artifact instead of compiling the kernel"
-        type: boolean
-        default: false
       upload:
         description: "Upload the finished .pkg to https://tmpfiles.org/"
         type: boolean
@@ -27,6 +27,10 @@ on:
         description: "linux.img ext4 size"
         type: string
         default: "6G"
+      reuse_kernel_run_id:
+        description: "Reuse the bzImage artifact of an earlier run (run id, empty = build kernel)"
+        type: string
+        default: ""
   push:
     branches: ["arena/**"]
     paths:
@@ -39,12 +43,19 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # One group per commit: a fixed pipeline must not wait behind a stale run from
 # an older commit (runners are free for public repositories).
 concurrency:
   group: external-build-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
+
+env:
+  ROOTFS_PROFILE: ${{ github.event.inputs.rootfs_profile || 'xorg' }}
+  ROOTFS_SIZE: ${{ github.event.inputs.rootfs_size || '6G' }}
+  # Optional: pin the toolchain release asset digest (empty = record only)
+  OO_TOOLCHAIN_SHA256: ""
 
 jobs:
   verify:
@@ -92,22 +103,77 @@ jobs:
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dotnet-sdk-8.0 \
             || echo "dotnet-sdk-8.0 unavailable (only needed for the LibOrbisPkg fallback)"
 
-      - name: Run external release pipeline
-        env:
-          # Optional: pin the toolchain release asset digest (empty = record only)
-          OO_TOOLCHAIN_SHA256: ""
+      - name: "Reuse bzImage from a previous run"
+        if: ${{ github.event.inputs.reuse_kernel_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ps4-linux-desktop-boot-assets
+          path: artifacts/external
+          run-id: ${{ github.event.inputs.reuse_kernel_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Stage 1/8 — OpenOrbis toolchain"
+        run: sudo -E ./scripts/build-external-release.sh --stages toolchain --install-deps
+
+      - name: "Stage 2/8 — kexec loader payload"
+        run: sudo -E ./scripts/build-external-release.sh --stages payload
+
+      - name: "Stage 3/8 — PS4 Fat kernel (bzImage + modules)"
+        if: ${{ github.event.inputs.reuse_kernel_run_id == '' }}
+        run: sudo -E ./scripts/build-external-release.sh --stages kernel
+
+      - name: "Stage 3/8 — skipped (reusing bzImage)"
+        if: ${{ github.event.inputs.reuse_kernel_run_id != '' }}
         run: |
-          set -o pipefail
-          ARGS=(--install-deps
-                --rootfs-profile "${{ github.event.inputs.rootfs_profile || 'xorg' }}"
-                --rootfs-size "${{ github.event.inputs.rootfs_size || '6G' }}")
-          if [[ "${{ github.event.inputs.skip_kernel }}" == "true" ]]; then
-            echo "skip_kernel requested but no prebuilt bzImage is shipped in this repo; building anyway"
-          fi
+          sudo -E ./scripts/build-external-release.sh --stages kernel --skip-kernel \
+            --bzimage artifacts/external/kernel/bzImage
+
+      - name: "Stage 4/8 — OpenOrbis modules + launcher FSELF"
+        run: sudo -E ./scripts/build-external-release.sh --stages orbis
+
+      - name: "Stage 5/8 — Debian 12 ext4 linux.img"
+        run: sudo -E ./scripts/build-external-release.sh --stages rootfs --rootfs-profile "$ROOTFS_PROFILE" --rootfs-size "$ROOTFS_SIZE"
+
+      - name: "Stage 6/8 — build the real fPKG"
+        run: |
           if [[ "${{ github.event.inputs.upload }}" == "false" ]]; then
-            ARGS+=(--no-upload)
+            sudo -E ./scripts/build-external-release.sh --stages pkg --no-upload
+          else
+            sudo -E ./scripts/build-external-release.sh --stages pkg
           fi
-          sudo -E ./scripts/build-external-release.sh "${ARGS[@]}"
+
+      - name: "Stage 7/8 — structural verification + PFS round-trip"
+        run: sudo -E ./scripts/build-external-release.sh --stages verify
+
+      - name: "Stage 8/8 — upload to tmpfiles.org"
+        if: ${{ github.event.inputs.upload != 'false' }}
+        run: sudo -E ./scripts/build-external-release.sh --stages upload
+
+      - name: "Stage 8/8 — skipped (--no-upload)"
+        if: ${{ github.event.inputs.upload == 'false' }}
+        run: echo "upload disabled by workflow input"
+
+      - name: Diagnose failure (publish log tail as annotation)
+        if: failure()
+        run: |
+          echo "Publishing the tail of artifacts/external/build.log as check-run annotations"
+          python3 - <<'PY' >> annotations.txt
+import re, pathlib
+log = pathlib.Path("artifacts/external/build.log")
+if not log.exists():
+    print("::error title=External build::build.log missing - the pipeline died before logging")
+    raise SystemExit(0)
+text = log.read_text(errors="replace")
+text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+lines = [l for l in text.splitlines() if l.strip()]
+for l in lines:
+    if any(k in l for k in ("[FATAL]", "[WARN]", "Error:", "error:", "ERROR", "failed", "No such file", "not found")):
+        msg = l.replace("%", "%25").replace("\r", "").replace("\n", "%0A")[:900]
+        print(f"::error title=build.log::{msg}")
+print("::notice title=Last pipeline lines::" + "%0A".join(
+    x.replace("%", "%25").replace("\r", "")[:160] for x in lines[-12:]))
+PY
+          cat annotations.txt >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish summary (URL + digests)
         if: always()
@@ -116,7 +182,7 @@ jobs:
             echo "## PS4 Linux Desktop — external build"
             echo
             if [[ -f artifacts/external/BUILD-LOG.md ]]; then
-              sed -n '1,40p' artifacts/external/BUILD-LOG.md
+              sed -n '1,45p' artifacts/external/BUILD-LOG.md
             else
               echo "BUILD-LOG.md was not produced — the pipeline stopped before the report step."
             fi
@@ -137,6 +203,7 @@ jobs:
             artifacts/external/pkg-inspection.json
             artifacts/external/pkg-upload.json
             artifacts/external/pkg-extract.log
+            artifacts/external/pkg-build.stderr
 
       - name: Upload kernel + loader + launcher artifacts
         if: always()

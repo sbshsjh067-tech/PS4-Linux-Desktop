@@ -85,6 +85,7 @@ DO_UPLOAD=1
 DO_PKG=1
 WITH_PS4_MESA=0
 INSTALL_DEPS=0
+STAGES="${STAGES:-toolchain,payload,kernel,orbis,rootfs,pkg,verify,upload}"
 
 usage() {
     cat <<'EOF'
@@ -103,6 +104,8 @@ PS4 Linux Desktop — external release builder
   --rootfs-profile P      minimal | xorg (default) | kde
   --with-ps4-mesa         Also build+install patched Mesa 26.2.5 into /opt/ps4-mesa
   --no-pkg                Stop after components (no .pkg, no upload)
+  --stages LIST           Run only these stages (comma separated), enables partial
+                          re-runs: toolchain,payload,kernel,orbis,rootfs,pkg,verify,upload
   --no-upload             Build + verify the .pkg, skip tmpfiles.org upload
   --install-deps          apt-get install the required Debian/Ubuntu packages
   -h | --help             This help
@@ -123,6 +126,7 @@ while [[ $# -gt 0 ]]; do
         --with-ps4-mesa)   WITH_PS4_MESA=1; shift ;;
         --no-pkg)          DO_PKG=0; DO_UPLOAD=0; shift ;;
         --no-upload)       DO_UPLOAD=0; shift ;;
+        --stages)          STAGES="$2"; shift 2 ;;
         --install-deps)    INSTALL_DEPS=1; shift ;;
         -h|--help)         usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -131,8 +135,9 @@ done
 
 mkdir -p "$WORK_DIR" "$ART_DIR"
 LOG_FILE="$ART_DIR/build.log"
-: > "$ART_DIR/.artifacts.md"
-: > "$ART_DIR/SHA256SUMS"
+STATE_FILE="$WORK_DIR/state.env"
+[[ -f "$ART_DIR/.artifacts.md" ]] || : > "$ART_DIR/.artifacts.md"
+[[ -f "$ART_DIR/SHA256SUMS" ]] || : > "$ART_DIR/SHA256SUMS"
 
 # Mirror the whole transcript to build.log (stdout+stderr).
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -151,6 +156,27 @@ log()  { printf '[%s] %s\n' "$(date -u '+%H:%M:%S')" "$*"; }
 warn() { printf '\033[1;33m[WARN] %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m[FATAL] %s\033[0m\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+stage_enabled() { [[ ",${STAGES}," == *",$1,"* ]]; }
+
+# Variables that later stages need when every stage runs in its own process
+# (e.g. one GitHub Actions step per stage, so a failure names the stage).
+save_state() {
+    {
+        printf 'TOOLCHAIN_ROOT=%q\n' "${TOOLCHAIN_ROOT:-}"
+        printf 'BZIMAGE=%q\n' "${BZIMAGE:-}"
+        printf 'LINUX_IMG=%q\n' "${LINUX_IMG:-}"
+        printf 'KERNEL_RELEASE=%q\n' "${KERNEL_RELEASE:-}"
+        printf 'MODULES_DIR=%q\n' "${MODULES_DIR:-}"
+        printf 'PKG_PATH=%q\n' "${PKG_PATH:-}"
+        printf 'PKGTOOL_FOR_VERIFY=%q\n' "${PKGTOOL_FOR_VERIFY:-}"
+        printf 'UPLOAD_URL=%q\n' "${UPLOAD_URL:-}"
+        printf 'DIRECT_URL=%q\n' "${DIRECT_URL:-}"
+    } > "$STATE_FILE"
+}
+if [[ -f "$STATE_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$STATE_FILE"
+fi
 
 trap 'die "command failed at line $LINENO: $BASH_COMMAND"' ERR
 
@@ -836,7 +862,8 @@ write_report() {
         echo
         echo "| Role | File | Bytes | SHA-256 |"
         echo "|---|---|---|---|"
-        cat "$ART_DIR/.artifacts.md"
+        # Stages may be re-run; keep one row per artifact (last one wins).
+        tac "$ART_DIR/.artifacts.md" | awk -F'|' '!seen[$3]++' | tac
         echo
         echo "## Package"
         echo
@@ -878,6 +905,7 @@ write_report() {
         echo "rejected by retail firmware. No Sony proprietary file was used at any step."
     } > "$report"
 
+    sort -u -k2 "$ART_DIR/SHA256SUMS" -o "$ART_DIR/SHA256SUMS" 2>/dev/null || true
     log "report written: $report"
     log "digests: $ART_DIR/SHA256SUMS"
     echo
@@ -897,21 +925,28 @@ main() {
     fi
 
     preflight
-    setup_toolchain
-    build_payload
 
-    if [[ "$BUILD_KERNEL" == "1" ]]; then
-        build_kernel_step
-    else
-        step "Kernel build skipped"
-        BZIMAGE="${BZIMAGE_OVERRIDE:-$ART_DIR/kernel/bzImage}"
-        [[ -f "$BZIMAGE" ]] || die "--skip-kernel given but no bzImage at $BZIMAGE (use --bzimage PATH)"
-        KERNEL_RELEASE="$(strings "$BZIMAGE" 2>/dev/null | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+' || echo unknown)"
-        record_artifact "PS4 Fat Linux kernel image (bzImage, prebuilt)" "$BZIMAGE"
+    if stage_enabled toolchain; then setup_toolchain; save_state; fi
+    if stage_enabled payload;   then build_payload;    save_state; fi
+
+    if stage_enabled kernel; then
+        if [[ "$BUILD_KERNEL" == "1" ]]; then
+            build_kernel_step
+        else
+            step "Kernel build skipped"
+            BZIMAGE="${BZIMAGE_OVERRIDE:-$ART_DIR/kernel/bzImage}"
+            [[ -f "$BZIMAGE" ]] || die "--skip-kernel given but no bzImage at $BZIMAGE (use --bzimage PATH)"
+            KERNEL_RELEASE="$(strings "$BZIMAGE" 2>/dev/null | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+' || echo unknown)"
+            record_artifact "PS4 Fat Linux kernel image (bzImage, prebuilt)" "$BZIMAGE"
+        fi
+        save_state
     fi
 
-    build_orbis_app
-    build_rootfs_step
+    # Later stages need these values even when they ran in an earlier process.
+    [[ -n "${TOOLCHAIN_ROOT:-}" ]] && export OO_PS4_TOOLCHAIN="$TOOLCHAIN_ROOT"
+
+    if stage_enabled orbis;  then build_orbis_app;     save_state; fi
+    if stage_enabled rootfs; then build_rootfs_step;   save_state; fi
 
     if [[ "$DO_PKG" != "1" ]]; then
         step "Package build disabled (--no-pkg)"
@@ -919,13 +954,16 @@ main() {
         return 0
     fi
 
-    build_pkg_step
-    verify_pkg_step
+    if stage_enabled pkg;    then build_pkg_step;      save_state; fi
+    if stage_enabled verify; then verify_pkg_step;     save_state; fi
 
-    if [[ "$DO_UPLOAD" == "1" ]]; then
-        upload_step
-    else
-        step "Upload skipped (--no-upload)"
+    if stage_enabled upload; then
+        if [[ "$DO_UPLOAD" == "1" ]]; then
+            upload_step
+        else
+            step "Upload skipped (--no-upload)"
+        fi
+        save_state
     fi
 
     write_report
@@ -933,8 +971,10 @@ main() {
     if [[ -n "${UPLOAD_URL:-}" ]]; then
         printf '\033[1;32mPKG UPLOADED: %s\033[0m\n' "$UPLOAD_URL"
         printf '\033[1;32mDIRECT LINK  : %s\033[0m\n' "${DIRECT_URL:-}"
-    else
+    elif [[ -n "${PKG_PATH:-}" ]]; then
         printf '\033[1;32mPKG BUILT     : %s\033[0m\n' "$PKG_PATH"
+    else
+        printf '\033[1;32mSTAGES DONE   : %s (no .pkg in this invocation)\033[0m\n' "$STAGES"
     fi
 }
 
