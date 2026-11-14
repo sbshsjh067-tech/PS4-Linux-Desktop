@@ -695,6 +695,7 @@ def stage_and_optionally_build_pkg(
     if ready and resolved_tool and output_pkg_path is not None:
         output_pkg_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_dir = output_pkg_path.parent
+        pre_existing_pkgs = {p.resolve() for p in tmp_dir.glob("*.pkg")}
         proc = subprocess.run(
             [resolved_tool, "pkg_build", str(gp4_path), str(tmp_dir)],
             capture_output=True,
@@ -702,6 +703,16 @@ def stage_and_optionally_build_pkg(
             check=False,
         )
         generated_default = tmp_dir / f"{cid_info.normalized_content_id}.pkg"
+        if proc.returncode == 0 and not generated_default.is_file():
+            # Different LibOrbisPkg generations name the artefact slightly
+            # differently; adopt the newest .pkg this run actually produced.
+            fresh = sorted(
+                (q for q in tmp_dir.glob("*.pkg") if q.resolve() not in pre_existing_pkgs),
+                key=lambda q: q.stat().st_mtime,
+                reverse=True,
+            )
+            if fresh:
+                generated_default = fresh[0]
         if proc.returncode == 0 and generated_default.is_file():
             if generated_default.resolve() != output_pkg_path.resolve():
                 shutil.move(str(generated_default), str(output_pkg_path))

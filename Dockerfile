@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         bc flex bison libssl-dev libelf-dev libncurses-dev \
         dwarves zstd xz-utils cpio kmod rsync \
         python3 python3-pip \
-        e2fsprogs debootstrap \
+        e2fsprogs debootstrap libicu-dev \
         util-linux file binutils \
         openssl sudo less vim-tiny \
     && rm -rf /var/lib/apt/lists/*

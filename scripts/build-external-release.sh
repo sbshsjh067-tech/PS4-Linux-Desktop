@@ -765,6 +765,12 @@ for p in d.get("prerequisites", []):
 
 build_pkg_step() {
     step "Building the real Orbis fPKG with PkgTool.Core"
+    # .NET 8 needs ICU; if it is missing the runtime aborts with
+    # "Couldn't find a valid ICU package installed on the system".
+    if ! ldconfig -p 2>/dev/null | grep -qi libicu; then
+        warn "libicu not found - enabling .NET globalization-invariant mode"
+        export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+    fi
     export DOTNET_ROLL_FORWARD=LatestMajor
     export DOTNET_CLI_TELEMETRY_OPTOUT=1
     export DOTNET_NOLOGO=1
@@ -772,10 +778,16 @@ build_pkg_step() {
     local report="$ART_DIR/pkg-report.json"
     mkdir -p "$ART_DIR/pkg"
 
-    local pkgtool="$TOOLCHAIN_ROOT/bin/linux/PkgTool.Core"
-    if [[ ! -x "$pkgtool" ]]; then
-        pkgtool="$(liborbispkg_pkgtool)" || die "no usable PkgTool.Core (neither the toolchain binary nor a from-source build)"
+    local pkgtool=""
+    if have dotnet; then
+        # Preferred: build the pinned LibOrbisPkg v0.2 (CLI verified from source).
+        pkgtool="$(liborbispkg_pkgtool)" || pkgtool=""
     fi
+    if [[ -z "$pkgtool" ]]; then
+        pkgtool="$TOOLCHAIN_ROOT/bin/linux/PkgTool.Core"
+        warn "falling back to the toolchain-bundled PkgTool.Core"
+    fi
+    [[ -x "$pkgtool" ]] || die "no usable PkgTool.Core (neither a from-source build nor the toolchain binary)"
 
     log "PkgTool.Core: $pkgtool"
     if [[ -x "$pkgtool" ]]; then
@@ -789,11 +801,10 @@ build_pkg_step() {
     run_packager "$pkgtool" "$report"
     local built="$PKG_BUILT_RESULT"
 
-    if [[ "$built" != "True" && "$pkgtool" == "$TOOLCHAIN_ROOT/bin/linux/PkgTool.Core" ]]; then
-        warn "packaging with the bundled PkgTool.Core failed; retrying with a from-source LibOrbisPkg build"
-        local fallback
-        if fallback="$(liborbispkg_pkgtool)"; then
-            pkgtool="$fallback"
+    if [[ "$built" != "True" && "$pkgtool" != "$TOOLCHAIN_ROOT/bin/linux/PkgTool.Core" ]]; then
+        warn "packaging with the from-source PkgTool.Core failed; retrying with the toolchain binary"
+        if [[ -x "$TOOLCHAIN_ROOT/bin/linux/PkgTool.Core" ]]; then
+            pkgtool="$TOOLCHAIN_ROOT/bin/linux/PkgTool.Core"
             run_packager "$pkgtool" "$report"
             built="$PKG_BUILT_RESULT"
         fi

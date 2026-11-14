@@ -5,7 +5,7 @@ name: External Build — packaging diagnosis (reuses an existing bzImage)
 # can be pinpointed in minutes instead of rebuilding the kernel first.
 #
 # It never uploads anything. Triggered by pushing a change to this file.
-# Revision: 4 (per-attempt pkg reports + immediate blocking-reason logging).
+# Revision: 5 (LibOrbisPkg-first packaging + ICU/globalization handling).
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential git curl ca-certificates clang lld llvm bc flex bison \
             libssl-dev libelf-dev libncurses-dev dwarves zstd xz-utils cpio kmod \
-            python3 e2fsprogs debootstrap util-linux file binutils openssl
+            python3 e2fsprogs debootstrap libicu-dev util-linux file binutils openssl
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dotnet-sdk-8.0 \
             || echo "dotnet unavailable"
 
