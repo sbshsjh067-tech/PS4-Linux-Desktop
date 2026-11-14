@@ -77,6 +77,7 @@ jobs:
           cd /tmp/oo/samples/hello_world
           OO_PS4_TOOLCHAIN="$TC" make eboot.bin > /tmp/control-build.log 2>&1
           rc=$?
+          echo "::notice title=control-dir::$(pwd) files=$(ls | tr '\n' ' ')"
           echo "::notice title=control-build::rc=$rc size=$(stat -c %s eboot.bin 2>/dev/null || echo none)"
           echo "::notice title=control-build-tail::$(tail -6 /tmp/control-build.log | tr '\n' ' ' | head -c 800)"
           if [ -f eboot.bin ]; then cp eboot.bin "$GITHUB_WORKSPACE/in/control-hello-world-eboot.bin"; fi

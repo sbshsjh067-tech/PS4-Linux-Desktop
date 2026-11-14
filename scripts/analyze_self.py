@@ -102,45 +102,28 @@ def analyse(path: Path) -> None:
     data = path.read_bytes()
     name = path.name
     if len(data) < 0x40 or struct.unpack_from("<I", data, 0)[0] != SELF_MAGIC:
-        notice(f"self-{name}", f"NOT a SELF (first4={data[:4].hex()}) size={len(data)}")
+        notice(f"self-{name}", f"NOT-a-SELF first4={data[:4].hex()} size={len(data)}")
         return
 
     hdr = parse_self(data)
-    notice(
-        f"self-{name}",
-        f"size={len(data)} declared={hdr['file_size']} version={hdr['version']} "
-        f"key_type=0x{hdr['key_type']:x} header_size={hdr['header_size']} "
-        f"meta={hdr['meta_size']} entries={hdr['num_entries']} flags=0x{hdr['flags']:x} "
-        f"attr=0x{hdr['attr']:x}",
-    )
-
-    segments = sorted({e["segment"] for e in hdr["entries"]})
-    notice(f"self-segments-{name}", f"segment_ids={segments}")
-
-    for entry in hdr["entries"]:
-        if entry["offset"] == 0 and entry["size"] == 0:
-            continue
-        notice(
-            f"self-entry-{name}-{entry['index']}",
-            f"seg={entry['segment']} props=0x{entry['props']:x} enc={entry['encrypted']} "
-            f"off=0x{entry['offset']:x} size=0x{entry['size']:x}",
-        )
+    segs = [(e["segment"], e["offset"], e["size"]) for e in hdr["entries"] if e["size"]]
+    seg_text = " ".join(f"{seg}:0x{off:x}+0x{size:x}" for seg, off, size in segs)
+    facts = [
+        f"{name} size={len(data)}",
+        f"key_type=0x{hdr['key_type']:x} hdr=0x{hdr['header_size']:x}",
+        f"entries={hdr['num_entries']}",
+        f"segs[{seg_text}]",
+    ]
 
     try:
         elf_off, elf = find_elf(data, hdr)
     except Exception as exc:  # pragma: no cover - diagnostic
-        notice(f"elf-{name}", f"no ELF found inside the SELF: {exc}")
+        facts.append(f"NO-ELF({exc})")
+        notice(f"self-{name}", " ".join(facts))
         return
 
     image = elf["image"]
     type_name = {1: "ET_REL", 2: "ET_EXEC", 3: "ET_DYN"}.get(elf["e_type"], str(elf["e_type"]))
-    notice(
-        f"elf-{name}",
-        f"offset=0x{elf_off:x} type={type_name} machine=0x{elf['e_machine']:x} "
-        f"entry=0x{elf['e_entry']:x} phoff=0x{elf['e_phoff']:x} phnum={elf['e_phnum']} "
-        f"shnum={elf['e_shnum']} flags=0x{elf['e_flags']:x}",
-    )
-
     loads = []
     dynamic = None
     interp = False
@@ -149,11 +132,11 @@ def analyse(path: Path) -> None:
         base = elf["e_phoff"] + i * 56
         if base + 56 > len(image):
             break
-        p_type, p_flags, p_off, p_vaddr, _p_paddr, p_filesz, p_memsz, p_align = struct.unpack_from(
+        p_type, p_flags, p_off, p_vaddr, _p, p_filesz, p_memsz, _a = struct.unpack_from(
             "<IIQQQQQQ", image, base
         )
         if p_type == PT_LOAD:
-            loads.append((p_vaddr, p_vaddr + p_memsz, p_flags, p_off, p_filesz, p_memsz, p_align))
+            loads.append((p_vaddr, p_vaddr + p_memsz, p_flags, p_off))
         elif p_type == PT_DYNAMIC:
             dynamic = (p_off, p_filesz)
         elif p_type == PT_INTERP:
@@ -162,17 +145,14 @@ def analyse(path: Path) -> None:
             phdr_seg = True
 
     entry = elf["e_entry"]
-    in_load = any(lo <= entry < hi for lo, hi, *_ in loads)
-    rwx = ["".join(ch for bit, ch in ((4, "R"), (2, "W"), (1, "X")) if flags & bit) for _, _, flags, *_ in loads]
-    notice(
-        f"loads-{name}",
-        f"count={len(loads)} entry_in_load={in_load} entry=0x{entry:x} "
-        f"ranges=" + " ".join(f"0x{lo:x}-0x{hi:x}" for lo, hi, *_ in loads) + f" perms={rwx}",
+    in_load = any(lo <= entry < hi for lo, hi, _f, _o in loads)
+    perms = "/".join(
+        "".join(ch for bit, ch in ((4, "R"), (2, "W"), (1, "X")) if flags & bit) for _l, _h, flags, _o in loads
     )
-    notice(
-        f"misc-{name}",
-        f"pt_interp={interp} pt_phdr={phdr_seg} first_load_starts_at_vaddr="
-        f"{('0x%x' % loads[0][0]) if loads else 'none'}",
+    facts.append(
+        f"elf@{elf_off:#x} type={type_name} entry={entry:#x} entry_in_load={in_load} "
+        f"phnum={elf['e_phnum']} loads={len(loads)} [{','.join(f'{lo:#x}-{hi:#x}' for lo, hi, _f, _o in loads)}] "
+        f"perms={perms} interp={interp} phdr_seg={phdr_seg}"
     )
 
     needed: list[str] = []
@@ -187,11 +167,10 @@ def analyse(path: Path) -> None:
             if tag == 0:
                 break
             table.setdefault(tag, val)
-        strtab_vaddr = table.get(DT_STRTAB, 0)
         strtab_off = None
-        for lo, hi, _f, p_off, _fs, _ms, _al in loads:
-            if lo <= strtab_vaddr < hi:
-                strtab_off = p_off + (strtab_vaddr - lo)
+        for lo, hi, _f, p_off in loads:
+            if lo <= table.get(DT_STRTAB, 0) < hi:
+                strtab_off = p_off + (table[DT_STRTAB] - lo)
                 break
         if strtab_off is not None:
             for i in range(0, dyn_size, 16):
@@ -208,7 +187,9 @@ def analyse(path: Path) -> None:
                         needed.append(text)
                     else:
                         soname = text
-    notice(f"deps-{name}", f"soname={soname} needed={needed or 'NONE (static)'}")
+    facts.append(f"soname={soname} needed={needed or 'NONE(static)'}")
+
+    notice(f"self-{name}", " ".join(facts))
 
 
 def main() -> int:
