@@ -1,10 +1,5 @@
 name: Analyse the shipped launcher (crash investigation)
 
-# Reads the eboot.bin / PRX modules that went into the delivered package from the
-# successful run's artifact, dissects the SELF + inner ELF, and builds the
-# upstream OpenOrbis hello_world sample with the SAME pinned toolchain as a
-# known-good control. Nothing is rebuilt from our own sources; this is analysis.
-
 on:
   push:
     branches: ["arena/**"]
@@ -36,51 +31,64 @@ jobs:
           run-id: ${{ env.SOURCE_RUN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: List what we got
+      - name: Locate and dissect the shipped SELF files
         run: |
-          find in -type f -printf '%s\t%p\n' | sort -k2
+          set -uo pipefail
+          echo "::notice title=tree::$(find in -type f -printf '%P %s | ' | head -c 900)"
+          FILES=""
+          for want in eboot.bin libc.prx libSceFios2.prx right.sprx; do
+            hit="$(find in -type f -name "$want" | head -1)"
+            if [ -n "$hit" ]; then FILES="$FILES $hit"; else echo "::warning title=missing::$want not in the artifact"; fi
+          done
+          echo "::notice title=analysed-files::${FILES}"
+          python3 scripts/analyze_self.py $FILES || echo "::warning title=analyzer::non-zero exit"
 
-      - name: Dissect the shipped SELF files
+      - name: Fetch toolchain and upstream sources
         run: |
-          set -euo pipefail
-          python3 scripts/analyze_self.py in/eboot.bin in/libc.prx in/libSceFios2.prx in/right.sprx
-
-      - name: Fetch the pinned toolchain + upstream samples
-        run: |
-          set -euo pipefail
+          set -uo pipefail
           curl -fL --retry 3 -o /tmp/tc.tar.gz \
             "https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/toolchain-llvm-18.tar.gz"
-          mkdir -p /tmp/tc && tar -xzf /tmp/tc.tar.gz -C /tmp/tc
-          TC="$(dirname "$(find /tmp/tc -maxdepth 6 -name link.x -print -quit)")"
-          echo "TC=$TC" >> "$GITHUB_ENV"
-          git clone -q https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain.git /tmp/oo
-          cd /tmp/oo && git checkout -q b458dfd9d2f5c40aa249b127c9b9b4488afdc686
-          echo "--- link.x entry line ---"
-          grep -n -i "entry" "$TC/link.x" | head -5
-          echo "--- crt1.o symbols ---"
-          llvm-nm-18 "$TC/lib/crt1.o" 2>/dev/null | head -20 || nm "$TC/lib/crt1.o" | head -20
+          rc=$?
+          echo "::notice title=toolchain-download::rc=$rc size=$(stat -c %s /tmp/tc.tar.gz 2>/dev/null || echo none)"
+          mkdir -p /tmp/tc && tar -xzf /tmp/tc.tar.gz -C /tmp/tc 2>/dev/null
+          linkx="$(find /tmp/tc -maxdepth 8 -name link.x -print -quit)"
+          echo "::notice title=linkx::${linkx:-NOT-FOUND}"
+          if [ -n "$linkx" ]; then echo "TC=$(dirname "$linkx")" >> "$GITHUB_ENV"; fi
+          git clone -q --depth 1 https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain.git /tmp/oo && \
+            echo "::notice title=clone::ok" || echo "::notice title=clone::failed"
+
+      - name: Toolchain internals (entry symbol, crt)
+        run: |
+          set -uo pipefail
+          TC="${TC:-}"
+          echo "::notice title=tc::${TC:-unset}"
+          if [ -n "$TC" ]; then
+            echo "::notice title=linkx-entry::$(grep -n -i 'ENTRY' "$TC/link.x" | head -3 | tr '\n' ' ')"
+            echo "::notice title=crt1-nm::$( (llvm-nm "$TC/lib/crt1.o" 2>/dev/null || nm "$TC/lib/crt1.o" 2>/dev/null || echo 'nm unavailable') | head -12 | tr '\n' ' ')"
+            echo "::notice title=libdir::$(ls "$TC/lib" 2>/dev/null | tr '\n' ' ' | head -c 700)"
+          fi
 
       - name: Build the upstream control sample
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          if [ -z "${TC:-}" ] || [ ! -d /tmp/oo/samples/hello_world ]; then
+            echo "::warning title=control::skipped (no toolchain or no samples)"; exit 0
+          fi
           cd /tmp/oo/samples/hello_world
-          OO_PS4_TOOLCHAIN="$TC" make eboot.bin 2>&1 | tail -20
-          ls -l eboot.bin
-          cp eboot.bin "$GITHUB_WORKSPACE/in/control-hello-world-eboot.bin"
+          OO_PS4_TOOLCHAIN="$TC" make eboot.bin > /tmp/control-build.log 2>&1
+          rc=$?
+          echo "::notice title=control-build::rc=$rc size=$(stat -c %s eboot.bin 2>/dev/null || echo none)"
+          echo "::notice title=control-build-tail::$(tail -6 /tmp/control-build.log | tr '\n' ' ' | head -c 800)"
+          if [ -f eboot.bin ]; then cp eboot.bin "$GITHUB_WORKSPACE/in/control-hello-world-eboot.bin"; fi
 
       - name: Dissect the control sample
         run: |
-          set -euo pipefail
-          python3 scripts/analyze_self.py in/control-hello-world-eboot.bin
-
-      - name: Compare launcher vs control
-        run: |
-          set -euo pipefail
-          for f in in/eboot.bin in/control-hello-world-eboot.bin; do
-            echo "=== $f ==="
-            od -An -tx1 -N4 "$f"
-            printf 'size=%s\n' "$(stat -c %s "$f")"
-          done
+          set -uo pipefail
+          if [ -f in/control-hello-world-eboot.bin ]; then
+            python3 scripts/analyze_self.py in/control-hello-world-eboot.bin
+          else
+            echo "::warning title=control::no control eboot.bin produced"
+          fi
 
       - name: Upload the analysis inputs for the record
         if: always()
@@ -88,6 +96,5 @@ jobs:
         with:
           name: launcher-analysis-inputs
           retention-days: 7
-          path: |
-            in/eboot.bin
-            in/control-hello-world-eboot.bin
+          path: in
+          if-no-files-found: warn
