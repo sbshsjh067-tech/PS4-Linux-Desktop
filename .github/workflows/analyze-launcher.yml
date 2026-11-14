@@ -1,0 +1,93 @@
+name: Analyse the shipped launcher (crash investigation)
+
+# Reads the eboot.bin / PRX modules that went into the delivered package from the
+# successful run's artifact, dissects the SELF + inner ELF, and builds the
+# upstream OpenOrbis hello_world sample with the SAME pinned toolchain as a
+# known-good control. Nothing is rebuilt from our own sources; this is analysis.
+
+on:
+  push:
+    branches: ["arena/**"]
+    paths:
+      - ".github/workflows/analyze-launcher.yml"
+      - "scripts/analyze_self.py"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  SOURCE_RUN: "43642717115"
+
+jobs:
+  analyse:
+    name: Dissect eboot.bin + control sample
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the shipped boot assets
+        uses: actions/download-artifact@v4
+        with:
+          name: ps4-linux-desktop-boot-assets
+          path: in
+          run-id: ${{ env.SOURCE_RUN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List what we got
+        run: |
+          find in -type f -printf '%s\t%p\n' | sort -k2
+
+      - name: Dissect the shipped SELF files
+        run: |
+          set -euo pipefail
+          python3 scripts/analyze_self.py in/eboot.bin in/libc.prx in/libSceFios2.prx in/right.sprx
+
+      - name: Fetch the pinned toolchain + upstream samples
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o /tmp/tc.tar.gz \
+            "https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/toolchain-llvm-18.tar.gz"
+          mkdir -p /tmp/tc && tar -xzf /tmp/tc.tar.gz -C /tmp/tc
+          TC="$(dirname "$(find /tmp/tc -maxdepth 6 -name link.x -print -quit)")"
+          echo "TC=$TC" >> "$GITHUB_ENV"
+          git clone -q https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain.git /tmp/oo
+          cd /tmp/oo && git checkout -q b458dfd9d2f5c40aa249b127c9b9b4488afdc686
+          echo "--- link.x entry line ---"
+          grep -n -i "entry" "$TC/link.x" | head -5
+          echo "--- crt1.o symbols ---"
+          llvm-nm-18 "$TC/lib/crt1.o" 2>/dev/null | head -20 || nm "$TC/lib/crt1.o" | head -20
+
+      - name: Build the upstream control sample
+        run: |
+          set -euo pipefail
+          cd /tmp/oo/samples/hello_world
+          OO_PS4_TOOLCHAIN="$TC" make eboot.bin 2>&1 | tail -20
+          ls -l eboot.bin
+          cp eboot.bin "$GITHUB_WORKSPACE/in/control-hello-world-eboot.bin"
+
+      - name: Dissect the control sample
+        run: |
+          set -euo pipefail
+          python3 scripts/analyze_self.py in/control-hello-world-eboot.bin
+
+      - name: Compare launcher vs control
+        run: |
+          set -euo pipefail
+          for f in in/eboot.bin in/control-hello-world-eboot.bin; do
+            echo "=== $f ==="
+            od -An -tx1 -N4 "$f"
+            printf 'size=%s\n' "$(stat -c %s "$f")"
+          done
+
+      - name: Upload the analysis inputs for the record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-analysis-inputs
+          retention-days: 7
+          path: |
+            in/eboot.bin
+            in/control-hello-world-eboot.bin
