@@ -426,18 +426,70 @@ build_orbis_app() {
 # STEP 05 — Debian root filesystem (real linux.img, ext4, LABEL=PS4KD)
 # ---------------------------------------------------------------------------
 rootfs_packages() {
+    # NOTE: network-manager is deliberately absent - it pulls polkitd, whose
+    # postinst cannot start its daemon inside a debootstrap chroot. Wired DHCP is
+    # provided by systemd-networkd (see the .network unit written below).
+    local common="systemd-sysv,udev,kmod,dbus,ca-certificates,curl,procps,pciutils,usbutils,iproute2,sudo,nano,openssh-server"
     case "$ROOTFS_PROFILE" in
         minimal)
-            echo "systemd,systemd-sysv,udev,kmod,dbus,ca-certificates,curl,procps,pciutils,usbutils,network-manager,openssh-server,sudo,nano"
+            echo "$common"
             ;;
         xorg)
-            echo "systemd,systemd-sysv,udev,kmod,dbus,ca-certificates,curl,procps,pciutils,usbutils,network-manager,openssh-server,sudo,nano,xserver-xorg-core,xserver-xorg-video-amdgpu,xserver-xorg-input-libinput,xinit,openbox,xterm,x11-xserver-utils,mesa-utils,libgl1-mesa-dri,libglx-mesa0,fonts-dejavu-core,alsa-utils,zram-tools"
+            echo "$common,xserver-xorg-core,xserver-xorg-video-amdgpu,xserver-xorg-input-libinput,xinit,openbox,xterm,x11-xserver-utils,mesa-utils,libgl1-mesa-dri,libglx-mesa0,fonts-dejavu-core,alsa-utils,zram-tools"
             ;;
         kde)
-            echo "systemd,systemd-sysv,udev,kmod,dbus,ca-certificates,curl,procps,pciutils,usbutils,network-manager,openssh-server,sudo,nano,kde-plasma-desktop,sddm,xserver-xorg-video-amdgpu,mesa-utils,libgl1-mesa-dri,fonts-dejavu-core,alsa-utils,zram-tools"
+            echo "$common,kde-plasma-desktop,sddm,xserver-xorg-video-amdgpu,mesa-utils,libgl1-mesa-dri,fonts-dejavu-core,alsa-utils,zram-tools"
             ;;
         *) die "unknown --rootfs-profile '$ROOTFS_PROFILE' (minimal|xorg|kde)" ;;
     esac
+}
+
+# Two-phase rootfs: debootstrap only the (reliable) minbase, then install the
+# profile packages inside a chroot with policy-rc.d blocking daemon starts.
+install_rootfs_packages() {
+    local rootfs="$1"
+    local pkgs
+    pkgs="$(rootfs_packages)"
+    local has_chroot=1
+    have chroot || { warn "chroot missing; skipping profile packages"; has_chroot=0; }
+
+    if [[ "$has_chroot" == "1" ]]; then
+        printf '#!/bin/sh\nexit 101\n' > "$rootfs/usr/sbin/policy-rc.d"
+        chmod 755 "$rootfs/usr/sbin/policy-rc.d"
+        cp /etc/resolv.conf "$rootfs/etc/resolv.conf" 2>/dev/null || true
+        if [[ ! -e "$rootfs/dev/null" ]]; then
+            mknod -m 666 "$rootfs/dev/null" c 1 3 2>/dev/null || true
+        fi
+        local m
+        for m in proc sys dev; do
+            mountpoint -q "$rootfs/$m" 2>/dev/null || mount --bind "/$m" "$rootfs/$m" 2>/dev/null || true
+        done
+
+        local env_args=(env DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true TZ=Etc/UTC LC_ALL=C.UTF-8)
+        log "apt-get update inside chroot"
+        chroot "$rootfs" "${env_args[@]}" apt-get update -qq || warn "apt-get update failed inside the chroot"
+        log "installing rootfs profile packages: $pkgs"
+        # shellcheck disable=SC2086
+        if ! chroot "$rootfs" "${env_args[@]}"                 apt-get install -y --no-install-recommends \
+                    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+                    $(echo "$pkgs" | tr ',' ' '); then
+            warn "full profile package set failed - retrying with the minimal core set"
+            chroot "$rootfs" "${env_args[@]}" \
+                apt-get install -y --no-install-recommends \
+                    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+                    systemd-sysv udev kmod dbus ca-certificates curl procps sudo nano \
+                || warn "core package set also failed; continuing with the minbase rootfs"
+        fi
+
+        chroot "$rootfs" apt-get clean || true
+        rm -rf "$rootfs/var/lib/apt/lists"/* "$rootfs/debootstrap" 2>/dev/null || true
+        rm -f "$rootfs/usr/sbin/policy-rc.d"
+        for m in dev sys proc; do
+            umount "$rootfs/$m" 2>/dev/null || true
+        done
+    fi
+
+    log "rootfs tree size after package install: $(du -sh "$rootfs" | cut -f1)"
 }
 
 build_rootfs_step() {
@@ -448,10 +500,16 @@ build_rootfs_step() {
 
     if [[ ! -f "$rootfs/usr/bin/apt-get" ]]; then
         rm -rf "$rootfs"
-        log "debootstrap ${ROOTFS_RELEASE} ($ROOTFS_PROFILE) -> $rootfs"
-        debootstrap --arch=amd64 --variant=minbase \
-            --include="$(rootfs_packages)" \
-            "$ROOTFS_RELEASE" "$rootfs" "$ROOTFS_MIRROR"
+        log "phase 1/3: debootstrap ${ROOTFS_RELEASE} (minbase) -> $rootfs"
+        if ! debootstrap --arch=amd64 --variant=minbase \
+                "$ROOTFS_RELEASE" "$rootfs" "$ROOTFS_MIRROR"; then
+            warn "debootstrap failed; cleaning and retrying once against the mirror"
+            rm -rf "$rootfs"
+            debootstrap --arch=amd64 --variant=minbase \
+                "$ROOTFS_RELEASE" "$rootfs" "$ROOTFS_MIRROR"
+        fi
+        log "phase 2/3: installing ${ROOTFS_PROFILE} profile packages in a chroot"
+        install_rootfs_packages "$rootfs"
     else
         log "reusing existing debootstrap tree: $rootfs"
     fi
@@ -516,6 +574,18 @@ vm.dirty_background_bytes = 16777216
 vm.min_free_kbytes = 65536
 kernel.panic = 10
 SYSCTL
+
+    mkdir -p "$rootfs/etc/systemd/network"
+    cat > "$rootfs/etc/systemd/network/20-wired-dhcp.network" <<'NETD'
+[Match]
+Name=e*
+
+[Network]
+DHCP=yes
+NETD
+    for u in systemd-networkd.service systemd-resolved.service; do
+        ln -sf "/lib/systemd/system/$u" "$rootfs/etc/systemd/system/multi-user.target.wants/$u"
+    done
 
     cat > "$rootfs/etc/modprobe.d/99-ps4-options.conf" <<'MODPROBE'
 # PS4 Liverpool/Gladius specifics
