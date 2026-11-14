@@ -43,6 +43,22 @@ jobs:
           echo "::notice title=analysed-files::${FILES}"
           python3 scripts/analyze_self.py $FILES || echo "::warning title=analyzer::non-zero exit"
 
+      - name: Install clang/lld for the control build
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends clang lld llvm binutils file || true
+          command -v ld.lld || ls /usr/bin/ld.lld* || true
+
+      - name: Raw ELF header bytes of the shipped eboot
+        run: |
+          set -uo pipefail
+          f=in/orbis/eboot.bin
+          echo "::notice title=eboot-head::$(od -Ax -tx1 -N64 -j 0x120 "$f" | tr '\n' ' ' | tr -s ' ' | head -c 700)"
+          echo "::notice title=eboot-phdr::$(od -Ax -tx1 -N64 -j 0x160 "$f" | tr '\n' ' ' | tr -s ' ' | head -c 700)"
+          dd if="$f" of=/tmp/eboot.elf bs=1 skip=288 status=none
+          echo "::notice title=readelf-h::$(readelf -h /tmp/eboot.elf 2>&1 | grep -E 'Class|Type|Machine|Entry|program headers|Number of' | tr '\n' ' ' | head -c 700)"
+          echo "::notice title=readelf-l::$(readelf -lW /tmp/eboot.elf 2>&1 | grep -E 'LOAD|INTERP|DYNAMIC|PHDR' | tr -s ' ' | tr '\n' '|' | head -c 900)"
+
       - name: Fetch toolchain and upstream sources
         run: |
           set -uo pipefail
