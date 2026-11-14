@@ -25,6 +25,4 @@ jobs:
           python3 scripts/probe_url.py \
             "https://tmpfiles.org/${ID}/${NAME}" \
             "https://tmpfiles.org/dl/${ID}/${NAME}" \
-            "https://tmpfiles.org/dl/${ID}/${NAME}?download=1" \
-            "https://tmpfiles.org/${ID}/${NAME}/" \
-            "https://tmpfiles.org/${ID}/${NAME}?download=1"
+            "https://tmpfiles.org/dl/${ID}/${NAME}?download=1"
