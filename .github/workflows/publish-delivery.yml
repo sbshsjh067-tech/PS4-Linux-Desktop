@@ -1,0 +1,105 @@
+name: Publish delivery asset (existing build -> direct download link)
+
+# Takes the .pkg that the successful pipeline run produced and publishes it as a
+# GitHub Release asset, so the deliverable has a stable, public, direct download
+# URL. NOTHING IS REBUILT: the bytes are downloaded from the artifact of the run
+# named in SOURCE_RUN, verified to start with \x7fCNT, and attached as-is.
+
+on:
+  push:
+    branches: ["arena/**"]
+    paths:
+      - ".github/workflows/publish-delivery.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  SOURCE_RUN: "43642717115"
+  TAG: "delivery-43642717115"
+
+jobs:
+  publish:
+    name: Publish the finished fPKG as a release asset
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Download the fPKG artifact from the successful run
+        uses: actions/download-artifact@v4
+        with:
+          name: ps4-linux-desktop-fpkg
+          path: delivery
+          run-id: ${{ env.SOURCE_RUN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download the reports artifact (digests + inspection)
+        uses: actions/download-artifact@v4
+        with:
+          name: ps4-linux-desktop-external-reports
+          path: reports
+          run-id: ${{ env.SOURCE_RUN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Inspect, digest and describe the package
+        run: |
+          set -euo pipefail
+          PKG="$(find delivery -type f -name '*.pkg' | head -1)"
+          if [ -z "$PKG" ]; then
+            echo "::error title=delivery::no .pkg found in the artifact"
+            exit 1
+          fi
+          SIZE="$(stat -c %s "$PKG")"
+          SHA="$(sha256sum "$PKG" | cut -d' ' -f1)"
+          NAME="$(basename "$PKG")"
+          MAGIC="$(od -An -tx1 -N4 "$PKG" | tr -d ' \n')"
+          echo "file   : $NAME"
+          echo "size   : $SIZE bytes"
+          echo "sha256 : $SHA"
+          echo "magic  : $MAGIC (expect 7f434e54 = \\x7fCNT)"
+          if [ "$MAGIC" != "7f434e54" ]; then
+            echo "::error title=delivery::the artifact does not start with \\x7fCNT"
+            exit 1
+          fi
+          {
+            echo "PKG=$PKG"
+            echo "PKG_NAME=$NAME"
+            echo "PKG_SIZE=$SIZE"
+            echo "PKG_SHA=$SHA"
+          } >> "$GITHUB_ENV"
+
+          printf '%s\n' \
+            "Direct delivery of the .pkg produced by run ${SOURCE_RUN} — downloaded from that run's artifact, not rebuilt." \
+            "" \
+            "| field | value |" \
+            "|---|---|" \
+            "| file | \`${NAME}\` |" \
+            "| size | ${SIZE} bytes |" \
+            "| sha256 | \`${SHA}\` |" \
+            "| header | \`7f434e54\` (\\x7fCNT) |" \
+            "| content id | IV0000-BREW00001_00-PS4LDESKTOP00000 |" \
+            "" \
+            "**Status:** structurally verified (CNT header + PFS round-trip in Stage 7 of that run)." \
+            "**NOT tested on real PS4 hardware.** Fake-signed fPKG (create-fself --paid 0x3800000000000011," \
+            "public 32-zero debug passcode) — it requires GoldHEN/HEN and will not install on stock firmware." \
+            > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release delete "$TAG" --yes -R "$GITHUB_REPOSITORY" || true
+          SUMS="$(find reports -type f -name 'SHA256SUMS' | head -1 || true)"
+          if [ -n "$SUMS" ]; then
+            gh release create "$TAG" "$PKG" "$SUMS" \
+              --title "PS4 Linux Desktop fPKG — run ${SOURCE_RUN}" \
+              --notes-file notes.md -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$PKG" \
+              --title "PS4 Linux Desktop fPKG — run ${SOURCE_RUN}" \
+              --notes-file notes.md -R "$GITHUB_REPOSITORY"
+          fi
+          gh release view "$TAG" --json url,assets -R "$GITHUB_REPOSITORY"
