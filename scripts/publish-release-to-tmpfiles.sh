@@ -61,49 +61,64 @@ print(url)
 PY
 )" || { log "FATAL: could not parse a URL from the API answer"; exit 1; }
 
-DIRECT_URL="${PAGE_URL/https:\/\/tmpfiles.org\//https://tmpfiles.org/dl/}"
-log "page=$PAGE_URL"
-log "direct=$DIRECT_URL"
-
-log "verifying the page"
-PAGE_CODE="$(curl -sS -o "$WORK/page.html" -w '%{http_code}' -L --max-time 90 "$PAGE_URL" || true)"
+# tmpfiles.org does not serve /dl/<id>/<name> directly (it 302s back to the
+# page); the real signed download link -- /dl/<token>/<id>/<name> -- is inside
+# the landing page. Extract it instead of guessing.
+log "fetching the landing page to read the signed download link"
+PAGE_CODE="$(curl -sS -o "$WORK/page.html" -w '%{http_code}' -L --max-time 90 \
+    -A 'Mozilla/5.0 (delivery-check)' "$PAGE_URL" || true)"
 log "page http=$PAGE_CODE"
 grep -q "$ASSET" "$WORK/page.html" || log "WARN: the asset name was not found in the page HTML"
 
-log "verifying the direct download"
-curl -sSIL --max-time 180 "$DIRECT_URL" > "$WORK/headers.txt" 2>/dev/null || true
-DL_CODE="$(awk '/^HTTP/{c=$2} END{print c}' "$WORK/headers.txt")"
-DL_LEN="$(awk 'BEGIN{IGNORECASE=1} /^content-length:/{gsub(/\r/,"");v=$2} END{print v}' "$WORK/headers.txt")"
-log "direct http=$DL_CODE content-length=${DL_LEN:-unknown}"
+EXPIRES="$(python3 - "$WORK/page.html" <<'PY'
+import re, sys
+html = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+text = re.sub(r"<[^>]+>", " ", html)
+m = re.search(r"File expires in ([0-9]+) minutes", text)
+print(m.group(1) if m else "unknown")
+PY
+)"
 
-STATUS="verified"
-if [[ "$DL_CODE" != "200" ]]; then
-    STATUS="page-only (direct link returned ${DL_CODE:-no-code})"
-fi
-if [[ -n "$DL_LEN" && "$DL_LEN" != "$SIZE" ]]; then
-    STATUS="size-mismatch (content-length $DL_LEN != $SIZE)"
-fi
+DIRECT_URL="$(python3 - "$WORK/page.html" <<'PY'
+import re, sys
+html = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+links = [l for l in re.findall(r'href=["\']([^"\']+)["\']', html) if "/dl/" in l]
+if links:
+    link = links[0]
+    print(link if link.startswith("http") else "https://tmpfiles.org" + link)
+else:
+    print("")
+PY
+)"
+log "page=$PAGE_URL"
+log "direct=$DIRECT_URL"
+log "expires_in_minutes=$EXPIRES"
 
-# Strongest check available: pull the file back through the public URL and
+# Strongest check available: pull the file back through the public link and
 # compare it byte-for-byte with what we uploaded.
 DL_SHA="unknown"
 DL_SIZE="0"
-if [[ "$DL_CODE" == "200" ]]; then
+DL_CODE="none"
+STATUS="page-only (no /dl/ link found in the page)"
+if [[ -n "$DIRECT_URL" ]]; then
     log "downloading the delivered file back from tmpfiles.org"
-    if curl -sSL --max-time 600 -o "$WORK/redownload.pkg" "$DIRECT_URL"; then
+    DL_CODE="$(curl -sSL --max-time 900 -A 'Mozilla/5.0 (delivery-check)' \
+        -e "$PAGE_URL" -o "$WORK/redownload.pkg" -w '%{http_code}' "$DIRECT_URL" || echo 000)"
+    if [[ -s "$WORK/redownload.pkg" ]]; then
         DL_SIZE="$(stat -c %s "$WORK/redownload.pkg")"
         DL_SHA="$(sha256sum "$WORK/redownload.pkg" | cut -d' ' -f1)"
-        log "redownloaded size=$DL_SIZE sha256=$DL_SHA"
+        log "redownloaded http=$DL_CODE size=$DL_SIZE sha256=$DL_SHA"
         if [[ "$DL_SHA" == "$SHA" && "$DL_SIZE" == "$SIZE" ]]; then
-            STATUS="verified (downloaded from the public URL and byte-identical)"
+            STATUS="verified (downloaded from the public link and byte-identical)"
         else
             STATUS="ROUND-TRIP MISMATCH (served sha256=$DL_SHA size=$DL_SIZE)"
         fi
     else
-        STATUS="direct link answered 200 but the download failed"
+        STATUS="direct link returned $DL_CODE with an empty body"
     fi
 fi
 
+DL_LEN="$DL_SIZE"
 printf '%s\n' \
     "url=$PAGE_URL" \
     "direct_url=$DIRECT_URL" \
@@ -114,6 +129,7 @@ printf '%s\n' \
     "direct_content_length=${DL_LEN:-unknown}" \
     "download_sha256=$DL_SHA" \
     "download_size=$DL_SIZE" \
+    "expires_in_minutes=$EXPIRES" \
     "status=$STATUS" \
     > "$WORK/TMPFILES-URL.txt"
 cat "$WORK/TMPFILES-URL.txt" >&2
@@ -122,10 +138,10 @@ gh release upload "$TAG" "$WORK/TMPFILES-URL.txt" -R "$REPO" --clobber
 
 gh release view "$TAG" -R "$REPO" --json body -q .body > "$WORK/body.md" || : > "$WORK/body.md"
 python3 - "$WORK/body.md" "$PAGE_URL" "$DIRECT_URL" "$SIZE" "$SHA" "$STATUS" \
-        "${DL_CODE:-none}" "${DL_LEN:-unknown}" "$DL_SHA" "$DL_SIZE" <<'PY'
+        "${DL_CODE:-none}" "${DL_LEN:-unknown}" "$DL_SHA" "$DL_SIZE" "$EXPIRES" <<'PY'
 import re, sys
 
-body_path, page, direct, size, sha, status, code, clen, dl_sha, dl_size = sys.argv[1:11]
+body_path, page, direct, size, sha, status, code, clen, dl_sha, dl_size, expires = sys.argv[1:12]
 body = open(body_path, encoding="utf-8").read() if body_path else ""
 body = re.split(r"\n## tmpfiles\.org mirror\n", body)[0].rstrip()
 body += "\n\n## tmpfiles.org mirror\n\n"
@@ -136,6 +152,7 @@ body += f"| size | {size} bytes |\n"
 body += f"| sha256 | `{sha}` |\n"
 body += f"| direct HTTP | {code} |\n"
 body += f"| direct content-length | {clen} |\n"
+body += f"| expires in (minutes) | {expires} |\n"
 body += f"| re-download size | {dl_size} bytes |\n"
 body += f"| re-download sha256 | `{dl_sha}` |\n"
 body += f"| status | {status} |\n"
@@ -149,7 +166,7 @@ echo "::notice title=tmpfiles-url::${PAGE_URL}"
 echo "::notice title=tmpfiles-direct::${DIRECT_URL} (http=${DL_CODE:-none} content-length=${DL_LEN:-unknown})"
 echo "::notice title=tmpfiles-file::size=${SIZE} sha256=${SHA} status=${STATUS}"
 echo "::notice title=tmpfiles-roundtrip::downloaded size=${DL_SIZE} sha256=${DL_SHA}"
-if [[ "$STATUS" == ROUND-TRIP* || "$STATUS" == "direct link answered"* ]]; then
+if [[ "$STATUS" == ROUND-TRIP* || "$STATUS" == "direct link"* || "$STATUS" == "page-only"* ]]; then
     echo "::error title=tmpfiles delivery::${STATUS}"
     exit 1
 fi
