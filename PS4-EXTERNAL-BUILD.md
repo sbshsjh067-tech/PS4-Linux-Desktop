@@ -88,8 +88,8 @@ sudo apt-get update
 sudo apt-get install -y build-essential git curl ca-certificates \
     clang lld llvm bc flex bison libssl-dev libelf-dev libncurses-dev \
     dwarves zstd xz-utils cpio kmod rsync python3 e2fsprogs debootstrap \
-    util-linux file binutils openssl
-# optional (only for the LibOrbisPkg fallback):
+    util-linux file binutils openssl libssl3 libcrypto3
+# optional (only for the LibOrbisPkg / PkgTool.Core fallback):
 sudo apt-get install -y dotnet-sdk-8.0
 
 sudo ./scripts/build-external-release.sh            # full pipeline + upload
@@ -100,8 +100,13 @@ sudo ./scripts/build-external-release.sh            # full pipeline + upload
 
 ### Option C — GitHub Actions
 
-`.github/workflows/external-build.yml` runs the entire pipeline on `ubuntu-latest`
+`.github/workflows/external-build.yml` runs the entire pipeline on `ubuntu-24.04`
 (7 vCPU / 14 GB RAM) and publishes `BUILD-LOG.md`, the boot assets and the `.pkg`.
+The image is pinned on purpose: `.NET 8` only probes `libssl.so.1.1`/`libssl.so.3`,
+so a runner whose OpenSSL major is newer (the `ubuntu-latest` migration) aborts with
+`No usable version of libssl was found`. If `libssl.so.3` is missing, the pipeline
+unpacks an OpenSSL 3 runtime into `.external-work/openssl3/` and retries with
+`LD_LIBRARY_PATH` — nothing on the host is modified.
 Trigger it with **Actions → External Build → Run workflow**, or push a change to
 `scripts/build-external-release.sh`, `orbis-launcher/**` or the workflow itself.
 
@@ -213,6 +218,9 @@ Hardware checklist for the first person with a console (Aeolia/Belize PS4 Fat, f
 | `debootstrap: command not found` | missing dep | rerun with `--install-deps` |
 | `.pkg` not produced, blocking reasons printed | a real component is missing | fix the listed component; the honesty gate refuses fake packages |
 | `PkgTool.Core` fails with a .NET runtime error | bundled binary needs a runtime | script falls back to building LibOrbisPkg (net8.0 retarget) |
+| `PkgTool.Core` prints `Usage: PkgTool.Core <verb> …` and exits 0 | arguments never reached the tool (the generated `exec dotnet … "$@"` wrapper was escaping `$@`) | fixed; keep `"$"@"` unescaped in the shim |
+| `No usable version of libssl was found` (`rc=-6`) | the CLR only loads OpenSSL 1.1/3, the distro ships a newer soname | run on Ubuntu 24.04 / install `libssl3`, or let the pipeline unpack its own OpenSSL 3 runtime |
+| `Couldn't find a valid ICU package` | CLR ICU probe vs. distro ICU | the pipeline exports `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` |
 | `tmpfiles.org` upload fails | network egress blocked | run on a host with egress, or use `--no-upload` and upload manually |
 
 ---
