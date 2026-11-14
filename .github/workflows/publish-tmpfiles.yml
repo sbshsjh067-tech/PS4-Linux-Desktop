@@ -29,9 +29,9 @@ jobs:
       - name: Upload and verify
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: delivery-43642717115
+          TAG: delivery-v2-43650542825
           ASSET: IV0000-BREW00001_00-PS4LDESKTOP00000.pkg
-          SHA_EXPECTED: c1197b29202d1d53770127f03ab9029d508bb036014e7d544b2926d95acb82eb
+          SHA_EXPECTED: 24eee1db3fa35da4250e7ca72feaa480afaaee2d6eafb6f89c944ff3f3c59b6a
           SIZE_EXPECTED: "16908288"
         run: |
           set -euo pipefail
