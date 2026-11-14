@@ -17,8 +17,8 @@ permissions:
   actions: read
 
 env:
-  SOURCE_RUN: "43642717115"
-  TAG: "delivery-43642717115"
+  SOURCE_RUN: "43650542825"
+  TAG: "delivery-v2-43650542825"
 
 jobs:
   publish:
@@ -70,7 +70,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
           printf '%s\n' \
-            "Direct delivery of the .pkg produced by run ${SOURCE_RUN} — downloaded from that run's artifact, not rebuilt." \
+            "Direct delivery of the .pkg produced by run ${SOURCE_RUN} (launcher fix for CE-34878-0) — downloaded from that run's artifact, not rebuilt." \
             "" \
             "| field | value |" \
             "|---|---|" \
@@ -81,6 +81,9 @@ jobs:
             "| content id | IV0000-BREW00001_00-PS4LDESKTOP00000 |" \
             "" \
             "**Status:** structurally verified (CNT header + PFS round-trip in Stage 7 of that run)." \
+            "" \
+            "**Launcher change:** main() no longer exits non-zero and probes /mnt/usb0, /mnt/usb1, /mnt/ext0 and /mnt/ext1." \
+            "**Hardware status: still NOT verified on a real PS4.**" \
             "**NOT tested on real PS4 hardware.** Fake-signed fPKG (create-fself --paid 0x3800000000000011," \
             "public 32-zero debug passcode) — it requires GoldHEN/HEN and will not install on stock firmware." \
             > notes.md
