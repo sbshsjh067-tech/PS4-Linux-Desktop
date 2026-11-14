@@ -70,17 +70,8 @@ jobs:
 
       - name: Build the upstream control sample
         run: |
-          set -uo pipefail
-          if [ -z "${TC:-}" ] || [ ! -d /tmp/oo/samples/hello_world ]; then
-            echo "::warning title=control::skipped (no toolchain or no samples)"; exit 0
-          fi
-          cd /tmp/oo/samples/hello_world
-          OO_PS4_TOOLCHAIN="$TC" make eboot.bin > /tmp/control-build.log 2>&1
-          rc=$?
-          echo "::notice title=control-dir::$(pwd) files=$(ls | tr '\n' ' ')"
-          echo "::notice title=control-build::rc=$rc size=$(stat -c %s eboot.bin 2>/dev/null || echo none)"
-          echo "::notice title=control-build-tail::$(tail -6 /tmp/control-build.log | tr '\n' ' ' | head -c 800)"
-          if [ -f eboot.bin ]; then cp eboot.bin "$GITHUB_WORKSPACE/in/control-hello-world-eboot.bin"; fi
+          chmod +x scripts/build_control_sample.sh
+          ./scripts/build_control_sample.sh
 
       - name: Dissect the control sample
         run: |

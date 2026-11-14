@@ -168,10 +168,12 @@ def analyse(path: Path) -> None:
                 break
             table.setdefault(tag, val)
         strtab_off = None
-        for lo, hi, _f, p_off in loads:
-            if lo <= table.get(DT_STRTAB, 0) < hi:
-                strtab_off = p_off + (table[DT_STRTAB] - lo)
-                break
+        strtab_vaddr = table.get(DT_STRTAB, 0)
+        if strtab_vaddr:
+            for lo, hi, _f, p_off in loads:
+                if lo <= strtab_vaddr < hi:
+                    strtab_off = p_off + (strtab_vaddr - lo)
+                    break
         if strtab_off is not None:
             for i in range(0, dyn_size, 16):
                 if dyn_off + i + 16 > len(image):
