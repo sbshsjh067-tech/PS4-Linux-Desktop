@@ -156,24 +156,9 @@ jobs:
       - name: Diagnose failure (publish log tail as annotation)
         if: failure()
         run: |
-          echo "Publishing the tail of artifacts/external/build.log as check-run annotations"
-          python3 - <<'PY' >> annotations.txt
-import re, pathlib
-log = pathlib.Path("artifacts/external/build.log")
-if not log.exists():
-    print("::error title=External build::build.log missing - the pipeline died before logging")
-    raise SystemExit(0)
-text = log.read_text(errors="replace")
-text = re.sub(r"\x1b\[[0-9;]*m", "", text)
-lines = [l for l in text.splitlines() if l.strip()]
-for l in lines:
-    if any(k in l for k in ("[FATAL]", "[WARN]", "Error:", "error:", "ERROR", "failed", "No such file", "not found")):
-        msg = l.replace("%", "%25").replace("\r", "").replace("\n", "%0A")[:900]
-        print(f"::error title=build.log::{msg}")
-print("::notice title=Last pipeline lines::" + "%0A".join(
-    x.replace("%", "%25").replace("\r", "")[:160] for x in lines[-12:]))
-PY
-          cat annotations.txt >> "$GITHUB_STEP_SUMMARY"
+          chmod +x scripts/ci_failure_annotations.py
+          python3 scripts/ci_failure_annotations.py artifacts/external/build.log \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Publish summary (URL + digests)
         if: always()
