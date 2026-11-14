@@ -765,12 +765,11 @@ for p in d.get("prerequisites", []):
 
 build_pkg_step() {
     step "Building the real Orbis fPKG with PkgTool.Core"
-    # .NET 8 needs ICU; if it is missing the runtime aborts with
-    # "Couldn't find a valid ICU package installed on the system".
-    if ! ldconfig -p 2>/dev/null | grep -qi libicu; then
-        warn "libicu not found - enabling .NET globalization-invariant mode"
-        export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
-    fi
+    # .NET 8 aborts with "Couldn't find a valid ICU package installed on the
+    # system" on runner images whose ICU does not satisfy its loader. PkgTool.Core
+    # only needs XML parsing, ISO date parsing, SHA/AES and file IO, all of which
+    # are culture-independent - force invariant globalization deterministically.
+    export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
     export DOTNET_ROLL_FORWARD=LatestMajor
     export DOTNET_CLI_TELEMETRY_OPTOUT=1
     export DOTNET_NOLOGO=1

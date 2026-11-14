@@ -5,7 +5,7 @@ name: External Build — packaging diagnosis (reuses an existing bzImage)
 # can be pinpointed in minutes instead of rebuilding the kernel first.
 #
 # It never uploads anything. Triggered by pushing a change to this file.
-# Revision: 5 (LibOrbisPkg-first packaging + ICU/globalization handling).
+# Revision: 6 (forced invariant globalization for .NET).
 
 on:
   workflow_dispatch:
