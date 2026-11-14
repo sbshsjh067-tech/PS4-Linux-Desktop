@@ -107,7 +107,11 @@ fetch_extra_firmware() {
         return 0
     fi
 
-    sha="$(git ls-remote "${firmware_repo}" "${fw_ref}" 2>/dev/null | awk '{print $1}' | head -1)"
+    sha=""
+    for ref in "${fw_ref}" "refs/heads/${fw_ref}" "HEAD"; do
+        sha="$(git ls-remote "${firmware_repo}" "${ref}" 2>/dev/null | awk '{print $1}' | head -1)"
+        [[ -n "$sha" ]] && break
+    done
     if [[ -z "$sha" ]]; then
         echo "ERROR: could not resolve linux-firmware ref '${fw_ref}' from ${firmware_repo}" >&2
         return 1

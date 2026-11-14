@@ -40,8 +40,10 @@ on:
 permissions:
   contents: read
 
+# One group per commit: a fixed pipeline must not wait behind a stale run from
+# an older commit (runners are free for public repositories).
 concurrency:
-  group: external-build-${{ github.ref }}
+  group: external-build-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:

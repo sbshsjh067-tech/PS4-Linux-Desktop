@@ -205,7 +205,7 @@ EOF
 
     local missing=()
     local req=(make gcc clang ld.lld llvm-ar llvm-nm objcopy bc flex bison
-               mke2fs debootstrap xz zstd tar curl git python3 e2fsck)
+               mke2fs debootstrap xz zstd tar curl git python3 e2fsck file od)
     for t in "${req[@]}"; do have "$t" || missing+=("$t"); done
     have dotnet || warn "dotnet not found - only needed for the from-source LibOrbisPkg fallback"
     have openssl || warn "openssl not found - root password will stay locked"
@@ -312,7 +312,7 @@ build_payload() {
 
     [[ -f "$src/kexec.bin" ]] || die "kexec.bin was not produced"
     cp "$src/kexec.bin" "$ART_DIR/kexec.bin"
-    log "kexec.bin ELF machine/type: $(file -b "$src/kexec.elf")"
+    log "kexec.bin ELF machine/type: $(file -b "$src/kexec.elf" 2>/dev/null || echo n/a)"
     record_artifact "Ring-0 kexec loader payload" "$ART_DIR/kexec.bin"
 }
 
@@ -576,33 +576,49 @@ RELEASE
 # STEP 06/07 — real .pkg (PkgTool.Core) + structural verification
 # ---------------------------------------------------------------------------
 liborbispkg_pkgtool() {
+    # Contract: ONLY the tool path is written to stdout; every log line goes to
+    # stderr because the caller captures stdout with $( ... ).
     local src="$WORK_DIR/LibOrbisPkg"
     if [[ -x "$WORK_DIR/bin/PkgTool.Core" ]]; then
         echo "$WORK_DIR/bin/PkgTool.Core"
         return 0
     fi
-    have dotnet || { warn "dotnet missing; cannot build LibOrbisPkg from source"; return 1; }
-    step "Fallback: build LibOrbisPkg PkgTool.Core @ ${LIBORBISPKG_COMMIT} with .NET 8"
-    fetch_pinned "$LIBORBISPKG_REPO" "$LIBORBISPKG_COMMIT" "$src"
-    # Upstream targets netcoreapp3.0 (EOL runtime); retarget to the installed SDK.
-    sed -i 's#<TargetFramework>netcoreapp3.0</TargetFramework>#<TargetFramework>net8.0</TargetFramework>#' \
-        "$src/LibOrbisPkg.Core/LibOrbisPkg.Core.csproj" "$src/PkgTool.Core/PkgTool.Core.csproj" || true
-    dotnet build "$src/PkgTool.Core/PkgTool.Core.csproj" -c Release -nologo
+    if ! have dotnet; then
+        warn "dotnet missing; cannot build LibOrbisPkg from source" >&2
+        return 1
+    fi
+    {
+        step "Fallback: build LibOrbisPkg PkgTool.Core @ ${LIBORBISPKG_COMMIT} with .NET 8"
+        fetch_pinned "$LIBORBISPKG_REPO" "$LIBORBISPKG_COMMIT" "$src"
+        # Upstream targets netcoreapp3.0 (EOL runtime); retarget to the installed SDK.
+        sed -i 's#<TargetFramework>netcoreapp3.0</TargetFramework>#<TargetFramework>net8.0</TargetFramework>#' \
+            "$src/LibOrbisPkg.Core/LibOrbisPkg.Core.csproj" "$src/PkgTool.Core/PkgTool.Core.csproj" || true
+    } >&2
+
+    if ! dotnet build "$src/PkgTool.Core/PkgTool.Core.csproj" -c Release -nologo; then
+        warn "LibOrbisPkg build failed" >&2
+        return 1
+    fi
+
     local dll="$src/PkgTool.Core/bin/Release/net8.0/PkgTool.Core.dll"
-    [[ -f "$dll" ]] || { warn "LibOrbisPkg fallback build produced no PkgTool.Core.dll"; return 1; }
+    if [[ ! -f "$dll" ]]; then
+        warn "LibOrbisPkg fallback build produced no PkgTool.Core.dll" >&2
+        return 1
+    fi
     mkdir -p "$WORK_DIR/bin"
-    cat > "$WORK_DIR/bin/PkgTool.Core" <<WRAP
-#!/bin/sh
-exec dotnet "$dll" "\$@"
-WRAP
+    {
+        printf '#!/bin/sh\n'
+        printf 'exec dotnet "%s" "\$@"\n' "$dll"
+    } > "$WORK_DIR/bin/PkgTool.Core"
     chmod +x "$WORK_DIR/bin/PkgTool.Core"
     echo "$WORK_DIR/bin/PkgTool.Core"
 }
 
 run_packager() {
-    local tool="$1" report="$2"
-    set +e
-    ./bin/ps4-pkg-packager build-or-stage \
+    local tool="$1" report="$2" rc=0
+    # NOTE: the packager intentionally exits 2 when the honesty gate blocks the
+    # build, so this call must not trip the ERR trap - use an `if` condition.
+    if ./bin/ps4-pkg-packager build-or-stage \
         --pkg-name "$PKG_NAME" \
         --staging-dir "$WORK_DIR/pkg-staging" \
         --output-dir "$ART_DIR/pkg" \
@@ -614,20 +630,24 @@ run_packager() {
         --payload "$ART_DIR/kexec.bin" \
         --linux-img "$LINUX_IMG" \
         --pkgtool "$tool" \
-        --json > "$report" 2> "$ART_DIR/pkg-build.stderr"
-    local rc=$?
-    set -e
+        --json > "$report" 2> "$ART_DIR/pkg-build.stderr"; then
+        rc=0
+    else
+        rc=$?
+    fi
     log "packager exit code: $rc (PkgTool.Core: $tool)"
     if [[ -s "$ART_DIR/pkg-build.stderr" ]]; then
         sed 's/^/    [stderr] /' "$ART_DIR/pkg-build.stderr" | head -40
     fi
-    python3 -c 'import json,sys
+    # Publish the verdict through a global: this function's stdout is the
+    # transcript, so callers must never capture it with $( ... ).
+    PKG_BUILT_RESULT="$(python3 -c 'import json,sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
     print("False"); sys.exit(0)
-print("True" if d.get("pkg_built") else "False")' "$report" > "$ART_DIR/.pkg-built" 2>/dev/null || echo False > "$ART_DIR/.pkg-built"
-    cat "$ART_DIR/.pkg-built"
+print("True" if d.get("pkg_built") else "False")' "$report" 2>/dev/null || echo False)"
+    printf '%s' "$PKG_BUILT_RESULT" > "$ART_DIR/.pkg-built"
 }
 
 build_pkg_step() {
@@ -642,17 +662,22 @@ build_pkg_step() {
     fi
 
     log "PkgTool.Core: $pkgtool"
-    "$pkgtool" 2>&1 | head -3 | sed 's/^/    /' || true
+    if [[ -x "$pkgtool" ]]; then
+        log "PkgTool.Core probe (usage banner):"
+        { "$pkgtool" 2>&1 || true; } | head -3 | sed 's/^/    /'
+    fi
 
-    local built
-    built="$(run_packager "$pkgtool" "$report")"
+    PKG_BUILT_RESULT="False"
+    run_packager "$pkgtool" "$report"
+    local built="$PKG_BUILT_RESULT"
 
     if [[ "$built" != "True" && "$pkgtool" == "$TOOLCHAIN_ROOT/bin/linux/PkgTool.Core" ]]; then
         warn "packaging with the bundled PkgTool.Core failed; retrying with a from-source LibOrbisPkg build"
         local fallback
         if fallback="$(liborbispkg_pkgtool)"; then
             pkgtool="$fallback"
-            built="$(run_packager "$pkgtool" "$report")"
+            run_packager "$pkgtool" "$report"
+            built="$PKG_BUILT_RESULT"
         fi
     fi
 
@@ -687,7 +712,7 @@ verify_pkg_step() {
     log "size: $(stat -c %s "$pkg") bytes"
     log "sha256: $(sha256sum "$pkg" | cut -d' ' -f1)"
     log "magic: $(od -An -tx1 -N4 "$pkg" | tr -d ' \n')  (expected 7f434e54 = \\x7fCNT)"
-    log "file(1): $(file -b "$pkg")"
+    log "file(1): $(file -b "$pkg" 2>/dev/null || echo n/a)"
     log "header dump [0x0000..0x0060]:"
     od -Ax -tx1 -N96 "$pkg" | sed 's/^/    /'
 
