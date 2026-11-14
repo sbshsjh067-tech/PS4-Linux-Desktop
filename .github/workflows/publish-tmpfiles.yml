@@ -1,0 +1,44 @@
+name: Mirror the release asset to tmpfiles.org
+
+# Delivery channel only: takes the .pkg that is already attached to the
+# delivery-43642717115 release, checks it is byte-identical to the verified
+# build output (size + sha256), uploads it verbatim to tmpfiles.org and writes
+# the returned URL back into the release notes and into TMPFILES-URL.txt.
+# Nothing is rebuilt, re-compressed or modified.
+
+on:
+  push:
+    branches: ["arena/**"]
+    paths:
+      - ".github/workflows/publish-tmpfiles.yml"
+      - "scripts/publish-release-to-tmpfiles.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  mirror:
+    name: Upload the fPKG to tmpfiles.org
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Upload and verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: delivery-43642717115
+          ASSET: IV0000-BREW00001_00-PS4LDESKTOP00000.pkg
+          SHA_EXPECTED: c1197b29202d1d53770127f03ab9029d508bb036014e7d544b2926d95acb82eb
+          SIZE_EXPECTED: "16908288"
+        run: |
+          set -euo pipefail
+          chmod +x scripts/publish-release-to-tmpfiles.sh
+          ./scripts/publish-release-to-tmpfiles.sh
+
+      - name: Publish summary
+        if: always()
+        run: |
+          echo "tmpfiles.org mirror job finished with status ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
