@@ -5,7 +5,7 @@ name: External Build — packaging diagnosis (reuses an existing bzImage)
 # can be pinpointed in minutes instead of rebuilding the kernel first.
 #
 # It never uploads anything. Triggered by pushing a change to this file.
-# Revision: 2 (two-phase rootfs + chroot package install).
+# Revision: 3 (pkg stage diagnostics: .NET roll-forward + tool probe + full stderr).
 
 on:
   workflow_dispatch:

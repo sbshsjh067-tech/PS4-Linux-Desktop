@@ -733,7 +733,8 @@ run_packager() {
     fi
     log "packager exit code: $rc (PkgTool.Core: $tool)"
     if [[ -s "$ART_DIR/pkg-build.stderr" ]]; then
-        sed 's/^/    [stderr] /' "$ART_DIR/pkg-build.stderr" | head -40
+        log "packager stderr:"
+        sed 's/^/    [stderr] /' "$ART_DIR/pkg-build.stderr" | head -80
     fi
     # Publish the verdict through a global: this function's stdout is the
     # transcript, so callers must never capture it with $( ... ).
@@ -748,6 +749,9 @@ print("True" if d.get("pkg_built") else "False")' "$report" 2>/dev/null || echo 
 
 build_pkg_step() {
     step "Building the real Orbis fPKG with PkgTool.Core"
+    export DOTNET_ROLL_FORWARD=LatestMajor
+    export DOTNET_CLI_TELEMETRY_OPTOUT=1
+    export DOTNET_NOLOGO=1
     local pkg_out="$ART_DIR/pkg/$PKG_NAME"
     local report="$ART_DIR/pkg-report.json"
     mkdir -p "$ART_DIR/pkg"
@@ -759,8 +763,10 @@ build_pkg_step() {
 
     log "PkgTool.Core: $pkgtool"
     if [[ -x "$pkgtool" ]]; then
-        log "PkgTool.Core probe (usage banner):"
-        { "$pkgtool" 2>&1 || true; } | head -3 | sed 's/^/    /'
+        local probe_rc=0
+        "$pkgtool" > "$ART_DIR/pkgtool-probe.out" 2>&1 || probe_rc=$?
+        log "PkgTool.Core probe exit=$probe_rc (a usage banner + non-zero exit is normal)"
+        head -6 "$ART_DIR/pkgtool-probe.out" | sed 's/^/    /'
     fi
 
     PKG_BUILT_RESULT="False"

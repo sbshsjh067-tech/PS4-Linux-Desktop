@@ -17,6 +17,7 @@ Exit status is always 0 - diagnostics must never mask the real failure.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -25,6 +26,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 INTERESTING = (
     "[FATAL]",
     "[WARN]",
+    "[stderr]",
     "ERROR",
     "Error",
     "error:",
@@ -34,10 +36,13 @@ INTERESTING = (
     "No such file",
     "not found",
     "Traceback",
+    "Exception",
+    "Unhandled",
     "command not found",
     "cannot",
     "undefined reference",
     "errno",
+    "  * ",
 )
 
 
@@ -81,6 +86,32 @@ def main(argv: list[str]) -> int:
     stages = [line for line in lines if line.startswith("==========")]
     if stages:
         print("::notice title=Stages reached::" + escape("\n".join(stages[-8:])))
+
+    # The packager's own report is the most reliable source of blocking reasons.
+    report = Path("artifacts/external/pkg-report.json")
+    if report.is_file():
+        try:
+            data = json.loads(report.read_text(errors="replace"))
+        except json.JSONDecodeError:
+            data = {}
+        reasons = data.get("blocking_reasons") or []
+        if reasons:
+            print("::error title=pkg-report blocking reasons::" + escape("\n".join(reasons)))
+        prereqs = data.get("prerequisites") or []
+        failed = [
+            f"{p.get('name')}: {p.get('detail')}"
+            for p in prereqs
+            if not (p.get("present") and p.get("valid"))
+        ]
+        if failed:
+            print("::error title=pkg-report missing prerequisites::" + escape("\n".join(failed)))
+
+    # Raw tool stderr (dotnet / PkgTool.Core) is the only place runtime errors appear.
+    for extra in ("artifacts/external/pkg-build.stderr",):
+        path = Path(extra)
+        if path.is_file() and path.read_text(errors="replace").strip():
+            tail = path.read_text(errors="replace").strip().splitlines()[-25:]
+            print(f"::error title={path.name}::" + escape("\n".join(tail)))
 
     return 0
 
