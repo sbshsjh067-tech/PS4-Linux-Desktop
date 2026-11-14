@@ -34,8 +34,20 @@
 
 #include <orbis/libkernel.h>
 
-#define PS4LD_USB_ROOT "/mnt/usb0"
-#define PS4LD_USB_DIR PS4LD_USB_ROOT "/PS4LINUX"
+/*
+ * The console mounts removable storage under different roots depending on the
+ * model, the port and the firmware: /mnt/usb0 is the common one on Fat/Belize,
+ * but /mnt/usb1, /mnt/ext0 and /mnt/ext1 are all seen in the wild. Hard-coding
+ * /mnt/usb0 made the launcher treat a perfectly good stick as "missing".
+ */
+static const char *const PS4LD_USB_ROOTS[] = {
+    "/mnt/usb0",
+    "/mnt/usb1",
+    "/mnt/ext0",
+    "/mnt/ext1",
+};
+#define PS4LD_USB_ROOT_COUNT ((int)(sizeof(PS4LD_USB_ROOTS) / sizeof(PS4LD_USB_ROOTS[0])))
+#define PS4LD_USB_SUBDIR "PS4LINUX"
 #define PS4LD_APP_ASSETS "/app0/assets/boot/"
 
 #define PS4LD_BINLOADER_IP "127.0.0.1"
@@ -132,29 +144,48 @@ static long copy_file(const char *src, const char *dst)
     return total;
 }
 
-static int ensure_usb_dir(void)
+/*
+ * find_writable_usb_dir() probes every removable-storage root and returns the
+ * first "<root>/PS4LINUX" directory that actually accepts a write, or NULL.
+ *
+ * The previous implementation returned a hard error for anything but
+ * /mnt/usb0 and main() then did `return 1`; on Orbis an application that exits
+ * non-zero is reported by the system as CE-34878-0, i.e. an immediate "the app
+ * crashed" dialog with no UI ever drawn. Missing storage is a user-fixable
+ * condition, never a crash: report it in the kernel log and keep running.
+ */
+static const char *find_writable_usb_dir(void)
 {
-    if (sceKernelMkdir(PS4LD_USB_ROOT, 0777) < 0) {
-        klog("[ps4ld] %s already present or unmountable (errno=%d), continuing\n",
-             PS4LD_USB_ROOT, errno);
-    }
-    if (sceKernelMkdir(PS4LD_USB_DIR, 0777) < 0) {
-        klog("[ps4ld] %s already present or unmountable (errno=%d), continuing\n",
-             PS4LD_USB_DIR, errno);
-    }
+    static char chosen[64];
+    int i;
 
-    /* Probe writability by opening a marker file. */
-    {
-        const char *probe = PS4LD_USB_DIR "/.ps4ld-writable";
-        int fd = sceKernelOpen(probe, PS4LD_O_WRONLY | PS4LD_O_CREAT | PS4LD_O_TRUNC, 0777);
+    for (i = 0; i < PS4LD_USB_ROOT_COUNT; i++) {
+        char dir[64];
+        char probe[96];
+        int fd;
 
+        snprintf(dir, sizeof(dir), "%s/%s", PS4LD_USB_ROOTS[i], PS4LD_USB_SUBDIR);
+        if (sceKernelMkdir(PS4LD_USB_ROOTS[i], 0777) < 0) {
+            klog("[ps4ld] %s not present/present-already (errno=%d)\n",
+                 PS4LD_USB_ROOTS[i], errno);
+        }
+        if (sceKernelMkdir(dir, 0777) < 0) {
+            klog("[ps4ld] %s not creatable (errno=%d)\n", dir, errno);
+        }
+
+        snprintf(probe, sizeof(probe), "%s/.ps4ld-writable", dir);
+        fd = sceKernelOpen(probe, PS4LD_O_WRONLY | PS4LD_O_CREAT | PS4LD_O_TRUNC, 0777);
         if (fd < 0) {
-            return -1;
+            klog("[ps4ld] %s not writable (errno=%d)\n", dir, errno);
+            continue;
         }
         sceKernelClose(fd);
         sceKernelUnlink(probe);
+        snprintf(chosen, sizeof(chosen), "%s", dir);
+        klog("[ps4ld] using writable staging directory %s\n", chosen);
+        return chosen;
     }
-    return 0;
+    return NULL;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -237,6 +268,7 @@ int main(void)
 {
     char src[256];
     char dst[256];
+    const char *usb_dir;
     int i;
     int copied = 0;
     int payload_rc;
@@ -245,34 +277,35 @@ int main(void)
 
     klog("=====================================================\n");
     klog("[ps4ld] PS4 Linux Desktop launcher (OpenOrbis clean-room build)\n");
-    klog("[ps4ld] Decision D-01: writes ONLY to %s\n", PS4LD_USB_DIR);
+    klog("[ps4ld] Decision D-01: writes ONLY to removable storage\n");
     klog("[ps4ld] Orbis internal HDD is never mounted, repartitioned or written.\n");
     klog("=====================================================\n");
 
-    if (ensure_usb_dir() != 0) {
-        klog("[ps4ld] ERROR: %s is not writable. Insert a FAT32/exFAT USB stick "
-             "and re-run the launcher (errno=%d).\n", PS4LD_USB_DIR, errno);
-        sceKernelSleep(5);
-        return 1;
-    }
+    usb_dir = find_writable_usb_dir();
+    if (usb_dir == NULL) {
+        klog("[ps4ld] WARNING: no writable removable storage found "
+             "(tried /mnt/usb0, /mnt/usb1, /mnt/ext0, /mnt/ext1).\n");
+        klog("[ps4ld] Insert a FAT32/exFAT USB stick, then relaunch. "
+             "The kexec payload will still be offered to GoldHEN.\n");
+    } else {
+        for (i = 0; i < BOOT_ASSET_COUNT; i++) {
+            long bytes;
 
-    for (i = 0; i < BOOT_ASSET_COUNT; i++) {
-        long bytes;
+            snprintf(src, sizeof(src), "%s%s", PS4LD_APP_ASSETS, BOOT_ASSETS[i]);
+            snprintf(dst, sizeof(dst), "%s/%s", usb_dir, BOOT_ASSETS[i]);
 
-        snprintf(src, sizeof(src), "%s%s", PS4LD_APP_ASSETS, BOOT_ASSETS[i]);
-        snprintf(dst, sizeof(dst), "%s/%s", PS4LD_USB_DIR, BOOT_ASSETS[i]);
-
-        bytes = copy_file(src, dst);
-        if (bytes < 0) {
-            klog("[ps4ld] WARN: could not stage %s -> %s (error %ld)\n",
-                 src, dst, bytes);
-            continue;
+            bytes = copy_file(src, dst);
+            if (bytes < 0) {
+                klog("[ps4ld] WARN: could not stage %s -> %s (error %ld)\n",
+                     src, dst, bytes);
+                continue;
+            }
+            klog("[ps4ld] staged %-20s %8ld bytes -> %s\n", BOOT_ASSETS[i], bytes, dst);
+            copied++;
         }
-        klog("[ps4ld] staged %-20s %8ld bytes -> %s\n", BOOT_ASSETS[i], bytes, dst);
-        copied++;
     }
 
-    klog("[ps4ld] staged %d/%d boot assets onto external USB storage\n",
+    klog("[ps4ld] staged %d/%d boot assets onto removable storage\n",
          copied, BOOT_ASSET_COUNT);
 
     /* Hand the ring-0 kexec payload to GoldHEN if BinLoader is listening. */
@@ -291,6 +324,17 @@ int main(void)
     klog("[ps4ld] Launcher finished. See PS4-EXTERNAL-BUILD.md for the "
          "hardware-verification checklist (NOT executed on real hardware).\n");
 
+    if (usb_dir == NULL) {
+        /* Give the user ~60 s to read the reason in the GoldHEN log instead of
+         * being hit by an error dialog the instant they open the app. */
+        klog("[ps4ld] holding for 60s so the log can be captured; "
+             "the launcher will then exit normally.\n");
+        for (i = 0; i < 12; i++) {
+            sceKernelSleep(5);
+        }
+    }
+
+    /* Orbis reports a non-zero process exit as CE-34878-0: always exit 0. */
     sceKernelSleep(3);
     return 0;
 }
