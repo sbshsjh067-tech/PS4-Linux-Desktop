@@ -84,6 +84,13 @@ jobs:
             "**NOT tested on real PS4 hardware.** Fake-signed fPKG (create-fself --paid 0x3800000000000011," \
             "public 32-zero debug passcode) — it requires GoldHEN/HEN and will not install on stock firmware." \
             > notes.md
+          SUMS_FILE="$(find reports -type f -name 'SHA256SUMS' | head -1 || true)"
+          if [ -n "$SUMS_FILE" ]; then
+            printf '\n<details><summary>SHA256SUMS produced by the build (every artefact)</summary>\n\n```\n' >> notes.md
+            cat "$SUMS_FILE" >> notes.md
+            printf '```\n\n</details>\n' >> notes.md
+            echo "SUMS_FILE=$SUMS_FILE" >> "$GITHUB_ENV"
+          fi
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the release asset
@@ -92,7 +99,8 @@ jobs:
         run: |
           set -euo pipefail
           gh release delete "$TAG" --yes -R "$GITHUB_REPOSITORY" || true
-          SUMS="$(find reports -type f -name 'SHA256SUMS' | head -1 || true)"
+          SUMS="${SUMS_FILE:-}"
+          if [ -z "$SUMS" ]; then SUMS="$(find reports -type f -name 'SHA256SUMS' | head -1 || true)"; fi
           if [ -n "$SUMS" ]; then
             gh release create "$TAG" "$PKG" "$SUMS" \
               --title "PS4 Linux Desktop fPKG — run ${SOURCE_RUN}" \
